@@ -1,0 +1,23 @@
+HOW TO GET A WIT.AI API KEY (AUDIO SOLVER)
+--------------------------------------------------------------------------------
+Wit.ai is used by `background.js` and the audio captcha solver to turn audio
+captcha prompts into text.
+
+STEPS:
+1. Open the official site: https://wit.ai/
+2. Sign in with your Facebook (Meta) account.
+3. Create a new app:
+   - Click "New App" in the top-left corner.
+   - Name: anything you want, for example `SiouX_Solver`.
+   - Language: choose `English`.
+   - Visibility: choose `Private`.
+   - Click `Create`.
+4. Copy the token:
+   - Open `Management` -> `Settings`.
+   - Find the `API Access` section.
+   - Copy the value from `Server Access Token`.
+5. Configure the token:
+   - In this repository, send `/witai YOUR_TOKEN` to the Telegram bot.
+   - Or set `WIT_AI_TOKEN=` in `.env`.
+   - If you use an external dashboard such as `dashboard.html`, paste the token
+     into the `witAiTokenInput` field and save it.

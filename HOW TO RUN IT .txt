@@ -1,0 +1,85 @@
+AUTOPIXEL RUN GUIDE
+English (US)
+
+1. Windows PowerShell
+
+Create the virtual environment:
+python -m venv .venv
+
+Activate it:
+.\.venv\Scripts\Activate.ps1
+
+Install dependencies:
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+Create the environment file:
+Copy-Item .env.example .env
+
+Run the bot:
+.\.venv\Scripts\python.exe main.py
+
+First-time check in Telegram:
+Send /doctor after the bot starts to verify your setup before using /login
+
+
+2. Windows Command Prompt (CMD)
+
+Create the virtual environment:
+python -m venv .venv
+
+Activate it:
+.venv\Scripts\activate.bat
+
+Install dependencies:
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+Create the environment file:
+copy .env.example .env
+
+Run the bot:
+.\.venv\Scripts\python.exe main.py
+
+First-time check in Telegram:
+Send /doctor after the bot starts to verify your setup before using /login
+
+
+3. Android Termux
+
+Update packages:
+pkg update && pkg upgrade -y
+
+Install required packages:
+pkg install -y python git clang rust libffi openssl
+
+Go to your project folder:
+cd /path/to/AUTOPIXEL
+
+Create the virtual environment:
+python -m venv .venv
+
+Activate it:
+source .venv/bin/activate
+
+Install dependencies:
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+
+Create the environment file:
+cp .env.example .env
+
+Run the bot:
+python main.py
+
+First-time check in Telegram:
+Send /doctor after the bot starts to verify your setup before using /login
+
+
+4. Important Note About Termux
+
+The Telegram bot process can run in Termux, but Chrome-based browser automation is designed for a desktop-class environment with Google Chrome available.
+
+That means Google login automation and offer checking may not work correctly on a stock Android Termux setup unless you provide a compatible Chrome/WebDriver environment outside Termux.
+
+If you want full browser automation, Windows or Linux with Google Chrome installed is the recommended setup.
