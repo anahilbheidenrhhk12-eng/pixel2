@@ -136,6 +136,17 @@ def _build_driver(profile: DeviceProfile, display_override: Optional[str] = None
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
+    # A session claiming to be a real Android phone but leaking its true
+    # (server) IP over WebRTC, or popping a native geolocation permission
+    # dialog Selenium can't click, is itself an inconsistency — matches the
+    # reference implementation's prefs.
+    options.add_experimental_option("prefs", {
+        "webrtc.ip_handling_policy": "disable_non_proxied_udp",
+        "webrtc.multiple_routes_enabled": False,
+        "webrtc.nonproxied_udp_enabled": False,
+        "profile.default_content_setting_values.geolocation": 2,
+    })
+
     # ── Launch browser ────────────────────────────────────────────────────────
     # On Railway/Docker always use the system-provided Chromium and matching
     # chromedriver. Downloading a random latest driver causes version mismatch
@@ -216,6 +227,24 @@ def _build_driver(profile: DeviceProfile, display_override: Optional[str] = None
         driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
             'enabled': True,
             'maxTouchPoints': profile.max_touch_points,
+        })
+        # A session that claims to be an Android phone but carries no
+        # locale/timezone/geolocation signal at all is itself an
+        # inconsistency — matches what a working reference implementation
+        # does alongside its UA/client-hints spoofing.
+        try:
+            driver.execute_cdp_cmd('Emulation.setLocaleOverride', {
+                'locale': profile.locale,
+            })
+        except Exception as exc:
+            logger.debug("Locale override unavailable for this Chrome build: %s", exc)
+        driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {
+            'timezoneId': profile.timezone_id,
+        })
+        driver.execute_cdp_cmd('Emulation.setGeolocationOverride', {
+            'latitude': profile.geolocation_latitude,
+            'longitude': profile.geolocation_longitude,
+            'accuracy': profile.geolocation_accuracy,
         })
         # Applies to every document loaded from here on (sign-in, Google One,
         # checkout) — not just the current page.

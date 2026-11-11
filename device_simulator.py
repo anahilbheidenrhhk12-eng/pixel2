@@ -118,6 +118,14 @@ class DeviceProfile:
     gpu_vendor:             str   = config.DEVICE_GPU_VENDOR
     gpu_renderer:           str   = config.DEVICE_GPU_RENDERER
 
+    # Locale/timezone/geolocation (spoofed via CDP Emulation.*Override) —
+    # see the comment on these constants in config.py for why they exist.
+    locale:                 str   = config.DEVICE_LOCALE
+    timezone_id:            str   = config.EMULATION_TIMEZONE_ID
+    geolocation_latitude:   float = config.EMULATION_GEO_LATITUDE
+    geolocation_longitude:  float = config.EMULATION_GEO_LONGITUDE
+    geolocation_accuracy:   int   = config.EMULATION_GEO_ACCURACY
+
     def client_hints_metadata(self) -> dict:
         """
         Full userAgentMetadata dict for CDP Emulation.setUserAgentOverride.

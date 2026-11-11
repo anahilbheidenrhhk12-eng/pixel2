@@ -43,6 +43,20 @@ SCREEN_PIXEL_RATIO  = 3.5
 CHROME_VERSION       = "157.0.8103.50"
 CHROME_MAJOR_VERSION = 157
 
+# ── Locale / timezone / geolocation ──────────────────────────────────────────
+# A working reference implementation (confirmed by a real screenshot: Google
+# showed its exact spoofed model, "Pixel 10 Pro") sets these via CDP too, on
+# top of the UA/client-hints work above — a session that claims to be an
+# Android phone but carries no locale/timezone/geolocation signal at all is
+# itself an inconsistency a device/fraud check could use. Static fallback
+# values (Mountain View, US Pacific) since this project has no per-proxy
+# geo-resolution system to source them from dynamically.
+DEVICE_LOCALE          = "en-US"
+EMULATION_TIMEZONE_ID  = "America/Los_Angeles"
+EMULATION_GEO_LATITUDE  = 37.3861
+EMULATION_GEO_LONGITUDE = -122.0839
+EMULATION_GEO_ACCURACY  = 100
+
 # ── User-Agent – Chrome UA Reduction (Chrome 110+) ───────────────────────────
 # Modern Chrome on Android NEVER reveals device model in the UA string.
 # The real device identity is sent via Sec-CH-UA-Model client hint.

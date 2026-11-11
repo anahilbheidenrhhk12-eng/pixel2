@@ -55,6 +55,47 @@ class MobileEmulationWiringTests(unittest.TestCase):
         self.assertTrue(calls['Emulation.setTouchEmulationEnabled']['enabled'])
         self.assertEqual(calls['Emulation.setTouchEmulationEnabled']['maxTouchPoints'], config.DEVICE_MAX_TOUCH)
 
+    def test_locale_timezone_and_geolocation_are_overridden(self):
+        """A reference implementation that DOES get its exact model
+        recognized by Google also sets these alongside UA/client-hints
+        spoofing — an Android session with no locale/timezone/geo signal at
+        all is itself an inconsistency."""
+        driver, _ = build_with_fake_chrome(self.profile)
+        calls = {c.args[0]: c.args[1] for c in driver.execute_cdp_cmd.call_args_list}
+        self.assertEqual(calls['Emulation.setLocaleOverride']['locale'], config.DEVICE_LOCALE)
+        self.assertEqual(calls['Emulation.setTimezoneOverride']['timezoneId'], config.EMULATION_TIMEZONE_ID)
+        geo = calls['Emulation.setGeolocationOverride']
+        self.assertEqual(geo['latitude'], config.EMULATION_GEO_LATITUDE)
+        self.assertEqual(geo['longitude'], config.EMULATION_GEO_LONGITUDE)
+        self.assertEqual(geo['accuracy'], config.EMULATION_GEO_ACCURACY)
+
+    def test_a_broken_locale_override_does_not_block_timezone_and_geo(self):
+        """Some Chrome/Chromium builds reject Emulation.setLocaleOverride —
+        that alone must not skip the timezone/geolocation calls after it."""
+        fake_driver = MagicMock()
+
+        def cdp_side_effect(cmd, params):
+            if cmd == 'Emulation.setLocaleOverride':
+                raise Exception('not supported on this build')
+            return MagicMock()
+
+        fake_driver.execute_cdp_cmd.side_effect = cdp_side_effect
+        with patch.object(ga, '_find_executable', return_value='/usr/bin/fake-binary'), \
+             patch.object(ga.webdriver, 'Chrome', return_value=fake_driver), \
+             patch.object(ga, 'Service', return_value=MagicMock()):
+            ga._build_driver(self.profile)
+        calls = [c.args[0] for c in fake_driver.execute_cdp_cmd.call_args_list]
+        self.assertIn('Emulation.setTimezoneOverride', calls)
+        self.assertIn('Emulation.setGeolocationOverride', calls)
+        self.assertIn('Page.addScriptToEvaluateOnNewDocument', calls)
+
+    def test_webrtc_and_geolocation_prefs_avoid_ip_leaks_and_permission_prompts(self):
+        driver, fake_chrome_cls = build_with_fake_chrome(self.profile)
+        options = fake_chrome_cls.call_args.kwargs['options']
+        prefs = options.experimental_options['prefs']
+        self.assertEqual(prefs['webrtc.ip_handling_policy'], 'disable_non_proxied_udp')
+        self.assertEqual(prefs['profile.default_content_setting_values.geolocation'], 2)
+
     def test_user_agent_and_client_hints_report_pixel_11_pro(self):
         driver, _ = build_with_fake_chrome(self.profile)
         calls = {c.args[0]: c.args[1] for c in driver.execute_cdp_cmd.call_args_list}
