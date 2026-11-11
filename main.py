@@ -44,6 +44,12 @@ from remote_checkout import (
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
 logger = logging.getLogger(__name__)
+
+# KVM_CHECK: diagnostic only; does not change browser or bot behavior.
+if os.path.exists("/dev/kvm"):
+    logger.info("KVM_CHECK: /dev/kvm exists; read=%s write=%s", os.access("/dev/kvm", os.R_OK), os.access("/dev/kvm", os.W_OK))
+else:
+    logger.info("KVM_CHECK: /dev/kvm is not available in this container")
 # HTTPX INFO logs include the entire Telegram API URL, including the bot token.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
