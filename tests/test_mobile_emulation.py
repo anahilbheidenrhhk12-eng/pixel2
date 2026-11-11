@@ -101,7 +101,7 @@ class MobileEmulationWiringTests(unittest.TestCase):
         calls = {c.args[0]: c.args[1] for c in driver.execute_cdp_cmd.call_args_list}
         ua_call = calls['Network.setUserAgentOverride']
         self.assertEqual(ua_call['userAgent'], self.profile.user_agent)
-        self.assertEqual(ua_call['userAgentMetadata']['model'], 'Pixel 11 Pro')
+        self.assertEqual(ua_call['userAgentMetadata']['model'], config.DEVICE_MODEL)
         self.assertTrue(ua_call['userAgentMetadata']['mobile'])
 
     def test_user_agent_is_also_set_as_a_launch_flag(self):
@@ -124,7 +124,7 @@ class MobileEmulationWiringTests(unittest.TestCase):
         driver, _ = build_with_fake_chrome(self.profile)
         calls = {c.args[0]: c.args[1] for c in driver.execute_cdp_cmd.call_args_list}
         headers = calls['Network.setExtraHTTPHeaders']['headers']
-        self.assertEqual(headers['Sec-CH-UA-Model'], '"Pixel 11 Pro"')
+        self.assertEqual(headers['Sec-CH-UA-Model'], f'"{config.DEVICE_MODEL}"')
         self.assertEqual(headers['Sec-CH-UA-Mobile'], '?1')
         self.assertEqual(headers['Sec-CH-UA-Platform'], '"Android"')
 
@@ -244,7 +244,7 @@ class NavigatorJsHighEntropyModelHintTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout.strip())
-        self.assertEqual(value['model'], 'Pixel 11 Pro')
+        self.assertEqual(value['model'], config.DEVICE_MODEL)
         self.assertEqual(value['platformVersion'], f'{config.ANDROID_VERSION}.0.0')
 
 
@@ -255,7 +255,7 @@ class DeviceProfileIdentityTests(unittest.TestCase):
 
     def test_model_and_platform_fields(self):
         profile = ds.create_device_profile()
-        self.assertEqual(profile.model, 'Pixel 11 Pro')
+        self.assertEqual(profile.model, config.DEVICE_MODEL)
         self.assertEqual(profile.android_version, '17')
         self.assertEqual(profile.gpu_renderer, 'PowerVR CXTP-48-1536')
         self.assertEqual(profile.hardware_concurrency, 7)
@@ -263,7 +263,7 @@ class DeviceProfileIdentityTests(unittest.TestCase):
     def test_screen_geometry_unchanged_from_pixel_10_pro(self):
         profile = ds.create_device_profile()
         self.assertEqual((profile.screen_width, profile.screen_height, profile.pixel_ratio),
-                          (412, 915, 3.5))
+                          (config.SCREEN_CSS_WIDTH, config.SCREEN_CSS_HEIGHT, config.SCREEN_PIXEL_RATIO))
 
     def test_chrome_version_is_157_with_a_randomized_patch(self):
         profile = ds.create_device_profile()
@@ -284,7 +284,7 @@ class ClientHintsHeadersTests(unittest.TestCase):
     def test_model_header_is_quoted(self):
         profile = ds.create_device_profile()
         headers = profile.client_hints_headers()
-        self.assertEqual(headers['Sec-CH-UA-Model'], '"Pixel 11 Pro"')
+        self.assertEqual(headers['Sec-CH-UA-Model'], f'"{config.DEVICE_MODEL}"')
 
     def test_mobile_and_platform_headers(self):
         profile = ds.create_device_profile()

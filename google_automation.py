@@ -626,7 +626,7 @@ def _log_device_spoofing_self_check(driver: webdriver.Chrome) -> None:
             "ua: navigator.userAgent"
             "});"
         )
-        logger.info("Device spoofing check (Pixel 11 Pro) — %s", check)
+        logger.info("Device spoofing check (%s) — %s", config.DEVICE_MODEL, check)
     except Exception as exc:
         logger.debug("Device spoofing check unavailable: %s", exc)
 
@@ -901,7 +901,7 @@ def check_gemini_offer(email: str, password: str,
         if remote_session is not None:
             remote_session.start_display()
         _report(progress_callback,
-                "📱 Starting Chrome (Pixel 11 Pro) browser session")
+                f"📱 Starting Chrome ({config.DEVICE_MODEL}) browser session")
 
         driver = _build_driver(device, display_override=remote_session.display if remote_session else None)
         if remote_session is not None:

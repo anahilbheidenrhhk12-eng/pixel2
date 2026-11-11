@@ -10,7 +10,7 @@ from device_simulator import create_device_profile
 from google_automation import check_gemini_offer
 
 def main():
-    print("🤖 Pixel 11 Pro Google One Gemini Offer CLI 🤖")
+    print(f"🤖 {config.DEVICE_MODEL} Google One Gemini Offer CLI 🤖")
     print("==================================================")
     
     # 选项：完全手动登录
