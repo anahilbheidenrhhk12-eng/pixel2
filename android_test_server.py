@@ -2,17 +2,27 @@ import os,subprocess,threading,time,base64,html
 from http.server import HTTPServer,BaseHTTPRequestHandler
 TOKEN=os.environ.get("VIEWER_TOKEN","")
 STATE={"status":"starting"}
+def report(message):
+ print("[ANDROID-TEST] "+str(message),flush=True)
+ STATE["status"]=str(message)
 def boot():
  try:
-  p=subprocess.Popen(["emulator","-avd","androidtest","-no-window","-no-audio","-no-boot-anim","-no-snapshot","-accel","off","-gpu","swiftshader_indirect","-memory","2048","-cores","2"],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
-  STATE["status"]="emulator started pid="+str(p.pid)
+  report("Launching emulator")
+  p=subprocess.Popen(["emulator","-avd","androidtest","-no-window","-no-audio","-no-boot-anim","-no-snapshot","-accel","off","-gpu","swiftshader_indirect","-memory","2048","-cores","2"],stdout=open("/tmp/emulator.log","w"),stderr=subprocess.STDOUT)
+  report("emulator started pid="+str(p.pid))
   for i in range(180):
    x=subprocess.run(["adb","shell","getprop","sys.boot_completed"],capture_output=True,text=True,timeout=15)
-   if x.stdout.strip()=="1":STATE["status"]="Android booted";return
-   if p.poll() is not None:STATE["status"]="emulator exited "+str(p.returncode);return
+   if x.stdout.strip()=="1":report("Android booted");return
+   if p.poll() is not None:
+    report("emulator exited "+str(p.returncode))
+    try:report(open("/tmp/emulator.log").read()[-4000:])
+    except Exception:pass
+    return
+   if i%10==0:
+    report("waiting for Android boot; elapsed="+str(i*3)+"s; adb="+(x.stdout.strip() or x.stderr.strip()[:120]))
    time.sleep(3)
-  STATE["status"]="boot timeout"
- except Exception as e:STATE["status"]=repr(e)
+  report("boot timeout")
+ except Exception as e:report(repr(e))
 class H(BaseHTTPRequestHandler):
  def auth(self):
   if not TOKEN or self.headers.get("Authorization")!="Bearer "+TOKEN:
