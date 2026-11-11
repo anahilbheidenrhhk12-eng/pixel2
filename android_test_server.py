@@ -19,7 +19,7 @@ class H(BaseHTTPRequestHandler):
    self.send_response(401);self.end_headers();self.wfile.write(b"Set VIEWER_TOKEN and send Authorization: Bearer <token>");return False
   return True
  def do_GET(self):
-  if self.path=="/health":
+  if self.path.split("?",1)[0]=="/health":
    self.send_response(200);self.end_headers();self.wfile.write(STATE["status"].encode());return
   if not self.auth():return
   if self.path=="/screen":
