@@ -5,6 +5,13 @@ STATE={"status":"starting"}
 def report(message):
  print("[ANDROID-TEST] "+str(message),flush=True)
  STATE["status"]=str(message)
+def emulator_diagnostics():
+ try:
+  with open("/tmp/emulator.log","r",errors="replace") as f:
+   tail=f.read()[-5000:]
+  lines=[line for line in tail.splitlines() if any(term in line.lower() for term in ("error","fatal","warning","failed","kvm","accel","qemu","memory","panic"))]
+  print("[ANDROID-TEST] emulator diagnostics: "+(" | ".join(lines[-12:])[-2400:] if lines else tail[-1200:] or "(log empty)"),flush=True)
+ except Exception as e:print("[ANDROID-TEST] diagnostics error: "+repr(e),flush=True)
 def boot():
  try:
   report("Launching emulator")
@@ -19,8 +26,10 @@ def boot():
     except Exception:pass
     return
    if i%10==0:
+    emulator_diagnostics()
     report("waiting for Android boot; elapsed="+str(i*3)+"s; adb="+(x.stdout.strip() or x.stderr.strip()[:120]))
    time.sleep(3)
+  emulator_diagnostics()
   report("boot timeout")
  except Exception as e:report(repr(e))
 class H(BaseHTTPRequestHandler):
