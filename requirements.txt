@@ -1,9 +1,7 @@
-# Core bot framework
-python-telegram-bot[job-queue]>=22.0
+python-telegram-bot==21.3
+selenium==4.21.0
+webdriver-manager==4.0.1
+pyotp
+aiohttp>=3.9,<4
 
-# Browser automation with stealth Chrome driver support
-undetected-chromedriver>=3.5.5
-setuptools>=82.0.0
-
-# TOTP code generation for automatic 2FA
-pyotp>=2.9.0
+Pillow>=10,<13

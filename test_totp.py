@@ -6,6 +6,7 @@ Run with:  python test_totp.py
 """
 
 import logging
+import os
 import sys
 from device_simulator import create_device_profile
 from google_automation import check_gemini_offer, GoogleAutomationError
@@ -17,9 +18,9 @@ logging.basicConfig(
 logger = logging.getLogger("test_totp")
 
 # ── Test account credentials ──────────────────────────────────────────────────
-EMAIL       = "tajishag1@gmail.com"
-PASSWORD    = "0112469760"
-TOTP_SECRET = "oakrsdmqu5gq6lk4fkho3n326fw2hwdd"
+EMAIL       = os.environ.get("TEST_GOOGLE_EMAIL", "")
+PASSWORD    = os.environ.get("TEST_GOOGLE_PASSWORD", "")
+TOTP_SECRET = os.environ.get("TEST_GOOGLE_TOTP_SECRET", "")
 
 # ── Tracked checks ────────────────────────────────────────────────────────────
 totp_code_entered  = False   # 6-digit code was typed into the field
@@ -34,16 +35,16 @@ def progress_callback(msg: str, screenshot_bytes=None):
     msg_lower = msg.lower()
 
     # Check 1 – 6-digit code was entered into the TOTP field
-    if "entering totp code" in msg_lower or "totp code" in msg_lower:
+    if "entering the authenticator code" in msg_lower or "totp code" in msg_lower:
         totp_code_entered = True
 
     # Check 2 – TOTP form was submitted (Google received the code)
-    if "totp submitted" in msg_lower or "step 4 — totp submitted" in msg_lower:
+    if "verification code submitted" in msg_lower or "step 4 — totp submitted" in msg_lower:
         totp_submitted = True
 
     # Check 3 – Account is confirmed logged in AFTER the TOTP step
     if (
-        "logged in successfully" in msg_lower
+        "signed in successfully" in msg_lower
         or ("step 5" in msg_lower and "success" in msg_lower)
         or "myaccount.google.com" in msg_lower
     ):
@@ -51,6 +52,9 @@ def progress_callback(msg: str, screenshot_bytes=None):
 
 
 def main():
+    if not EMAIL or not PASSWORD:
+        logger.error("Set TEST_GOOGLE_EMAIL and TEST_GOOGLE_PASSWORD to run this optional integration test.")
+        sys.exit(2)
     logger.info("=" * 60)
     logger.info("TEST: 6-digit TOTP entry + login confirmation")
     logger.info("Account : %s", EMAIL)

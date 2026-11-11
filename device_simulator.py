@@ -1,15 +1,26 @@
 """
-Android Pixel 10 Pro device simulator.
+Android Pixel 11 Pro device simulator.
 
 Each session gets unique identifiers (IMEI, Android ID, device fingerprint,
-Chrome version patch) while the hardware identity remains "Pixel 10 Pro".
+Chrome version patch) while the hardware identity remains "Pixel 11 Pro".
 
 Key implementation detail:
   Chrome 110+ uses UA Reduction — the User-Agent string always shows
-  "Android 10; K" regardless of real device. The actual device model
-  is communicated via Sec-CH-UA-Model client hint (set via CDP).
+  "Android 10; K" regardless of real device. The actual device model is a
+  "high-entropy" User-Agent Client Hint, read via
+  navigator.userAgentData.getHighEntropyValues(['model']).
+
+  CDP's Network.setUserAgentOverride (with userAgentMetadata) asks Chrome to
+  construct navigator.userAgentData itself — but a real Railway run showed
+  that object simply isn't there yet on the blank page the browser starts on
+  before any navigation (getHighEntropyValues logged "no-high-entropy-api").
+  So navigator_js() below defines navigator.userAgentData directly as a
+  plain JS object with our own getHighEntropyValues() implementation — this
+  is always present, on every document, regardless of Chrome's own native
+  Client Hints timing/plumbing.
 """
 
+import json
 import random
 import string
 import uuid
@@ -19,7 +30,14 @@ import config
 
 
 # ── Real Google Pixel TAC prefixes (Type Allocation Code) ────────────────────
-# These are genuine GSMA-registered TAC codes for Google Pixel devices.
+# These are genuine GSMA-registered TAC codes for Google Pixel devices. The
+# TAC only has to be a real, currently-valid Pixel allocation — it does not
+# have to match DEVICE_MODEL exactly (this list never included a Pixel 10 Pro
+# TAC either, despite the profile being named "Pixel 10 Pro" before this
+# update). A Pixel 11 Pro TAC is deliberately NOT added here: GSMA TAC
+# allocations for a model this new (launched ~Aug 2026) are not yet in public
+# TAC lookup sources as of Nov 2026, and inventing one would risk an
+# IMEI that fails a real TAC lookup — worse than reusing a verified real one.
 PIXEL_TAC_PREFIXES = [
     "35272012",  # Pixel 9 Pro
     "35383711",  # Pixel 8 Pro
@@ -61,10 +79,10 @@ def _generate_device_fingerprint(model: str, build_id: str, android: str) -> str
 
 
 def _random_chrome_patch() -> str:
-    """Return a realistic Chrome 149 version string with slight random patch."""
-    major = config.CHROME_MAJOR_VERSION       # 149
-    build = random.randint(7820, 7840)
-    patch = random.randint(180, 220)
+    """Return a realistic Chrome 157 version string with slight random patch."""
+    major = config.CHROME_MAJOR_VERSION       # 157
+    build = random.randint(8095, 8110)
+    patch = random.randint(30, 70)
     return f"{major}.0.{build}.{patch}"
 
 
@@ -79,7 +97,7 @@ class DeviceProfile:
     chrome_version:     str
     session_id:         str = field(default_factory=lambda: str(uuid.uuid4()))
 
-    # Fixed Pixel 10 Pro hardware identity
+    # Fixed Pixel 11 Pro hardware identity
     model:           str   = config.DEVICE_MODEL
     brand:           str   = config.DEVICE_BRAND
     manufacturer:    str   = config.DEVICE_MANUFACTURER
@@ -87,10 +105,13 @@ class DeviceProfile:
     android_sdk:     str   = config.ANDROID_SDK
     build_id:        str   = config.BUILD_ID
 
-    # Hardware capabilities (spoofed via CDP + JS injection)
-    device_memory:          int   = 16        # 16 GB RAM (spoofed, browser API has no cap in JS)
-    hardware_concurrency:   int   = 8         # Tensor G5 reported cores
-    max_touch_points:       int   = 5         # realistic multitouch
+    # Hardware capabilities (spoofed via CDP + JS injection). These used to be
+    # hardcoded here independently of config.py's DEVICE_RAM_GB/DEVICE_CPU_CORES/
+    # DEVICE_MAX_TOUCH (which nothing actually read) — now they're the same
+    # source of truth, so a future chipset update only needs to happen in config.py.
+    device_memory:          int   = config.DEVICE_RAM_GB      # 16 GB RAM (spoofed, browser API has no cap in JS)
+    hardware_concurrency:   int   = config.DEVICE_CPU_CORES   # Tensor G6: 7 reported cores
+    max_touch_points:       int   = config.DEVICE_MAX_TOUCH   # realistic multitouch
     screen_width:           int   = config.SCREEN_CSS_WIDTH   # 412
     screen_height:          int   = config.SCREEN_CSS_HEIGHT  # 915
     pixel_ratio:            float = config.SCREEN_PIXEL_RATIO # 3.5
@@ -118,10 +139,45 @@ class DeviceProfile:
             "platform":        "Android",
             "platformVersion": f"{config.ANDROID_VERSION}.0.0",
             "architecture":    "arm",
-            "model":           self.model,      # "Pixel 10 Pro" — the real device hint
+            "model":           self.model,      # "Pixel 11 Pro" — the real device hint
             "mobile":          True,
             "bitness":         "64",
             "wow64":           False,
+        }
+
+    def client_hints_headers(self) -> dict:
+        """
+        Literal Sec-CH-UA-* request headers, set directly via CDP
+        Network.setExtraHTTPHeaders.
+
+        Why this is needed in addition to client_hints_metadata() above:
+        Network.setUserAgentOverride's userAgentMetadata only makes Chrome
+        send these headers once the server has opted in via an Accept-CH
+        response header — the very first request to a new origin can go out
+        without them, and a real Railway test showed Google's own security
+        page still displaying a generic "Android" device despite the JS-level
+        override working correctly (confirmed independently). Setting these
+        headers explicitly here means Google's server sees the real model on
+        every single request, including the first one, with no Accept-CH
+        round-trip required.
+        """
+        metadata = self.client_hints_metadata()
+        brands = ", ".join(
+            f'"{b["brand"]}";v="{b["version"]}"' for b in metadata["brands"]
+        )
+        full_version_list = ", ".join(
+            f'"{b["brand"]}";v="{b["version"]}"' for b in metadata["fullVersionList"]
+        )
+        return {
+            "Sec-CH-UA":                  brands,
+            "Sec-CH-UA-Mobile":           "?1",
+            "Sec-CH-UA-Platform":         '"Android"',
+            "Sec-CH-UA-Platform-Version": f'"{metadata["platformVersion"]}"',
+            "Sec-CH-UA-Model":            f'"{metadata["model"]}"',
+            "Sec-CH-UA-Full-Version":     f'"{self.chrome_version}"',
+            "Sec-CH-UA-Full-Version-List": full_version_list,
+            "Sec-CH-UA-Arch":             f'"{metadata["architecture"]}"',
+            "Sec-CH-UA-Bitness":          f'"{metadata["bitness"]}"',
         }
 
     def navigator_js(self) -> str:
@@ -130,13 +186,45 @@ class DeviceProfile:
         Page.addScriptToEvaluateOnNewDocument.
 
         Overrides all detectable browser fingerprint signals to match a real
-        physical Pixel 10 Pro running Chrome 149.
+        physical Pixel 11 Pro running Chrome 157.
         """
         gpu_vendor   = self.gpu_vendor.replace("'", "\\'")
         gpu_renderer = self.gpu_renderer.replace("'", "\\'")
+        high_entropy_json = json.dumps(self.client_hints_metadata())
         return f"""
 (function () {{
   'use strict';
+
+  // ── 0. navigator.userAgentData (the device-model hint) ─────────────────
+  // See the module docstring: CDP alone doesn't reliably construct this
+  // object (observed missing on Chrome's blank startup page on Railway), so
+  // we define it directly here instead of depending on Chrome to do it.
+  // Page.addScriptToEvaluateOnNewDocument runs this on every document,
+  // so getHighEntropyValues(['model']) always resolves to "Pixel 11 Pro".
+  try {{
+    const highEntropyUaData = {high_entropy_json};
+    const lowEntropyUaData = {{
+      brands: highEntropyUaData.brands,
+      mobile: true,
+      platform: 'Android',
+    }};
+    Object.defineProperty(navigator, 'userAgentData', {{
+      get: () => ({{
+        ...lowEntropyUaData,
+        getHighEntropyValues: (hints) => {{
+          if (!Array.isArray(hints) || !hints.length) {{
+            return Promise.resolve({{ ...highEntropyUaData }});
+          }}
+          return Promise.resolve(hints.reduce((acc, hint) => {{
+            if (hint in highEntropyUaData) acc[hint] = highEntropyUaData[hint];
+            return acc;
+          }}, {{}}));
+        }},
+        toJSON: () => ({{ ...lowEntropyUaData }}),
+      }}),
+      configurable: true
+    }});
+  }} catch (e) {{}}
 
   // ── 1. Remove automation trace ──────────────────────────────────────────
   try {{
@@ -335,7 +423,7 @@ class DeviceProfile:
 
 def create_device_profile() -> DeviceProfile:
     """
-    Create a fresh Pixel 10 Pro device profile with unique per-session
+    Create a fresh Pixel 11 Pro device profile with unique per-session
     identifiers and a fully spoofed hardware fingerprint.
     """
     chrome_version = _random_chrome_patch()

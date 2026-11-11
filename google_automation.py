@@ -33,6 +33,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 import config
 from device_simulator import DeviceProfile
+from google_one_plan import open_annual_ai_pro_checkout, open_add_card_dialog
 
 logger = logging.getLogger(__name__)
 
@@ -41,42 +42,55 @@ ProgressCB = Optional[Callable[[str, Optional[bytes]], None]]
 
 # ── Screenshot helper ─────────────────────────────────────────────────────────
 
-def _shot(driver: webdriver.Chrome) -> Optional[bytes]:
+def _shot(driver: webdriver.Chrome, crop_bottom: bool = False) -> Optional[bytes]:
     """Return a PNG screenshot as bytes, or None on failure."""
     try:
-        return driver.get_screenshot_as_png()
+        payload = driver.get_screenshot_as_png()
+        if crop_bottom:
+            from screenshot_crop import crop_stage_six
+            return crop_stage_six(payload)
+        return payload
     except Exception:
         return None
 
 
-def _report(cb: ProgressCB, msg: str, driver: Optional[webdriver.Chrome] = None) -> None:
+def _report(cb: ProgressCB, msg: str, driver: Optional[webdriver.Chrome] = None, *, crop_bottom: bool = False) -> None:
     """Send a progress message (and optional screenshot) via the callback."""
     logger.info(msg)
     if cb:
-        screenshot = _shot(driver) if driver else None
+        screenshot = _shot(driver, crop_bottom=crop_bottom) if driver and getattr(cb, "capture_screenshots", True) else None
         try:
             cb(msg, screenshot)
         except Exception as e:
             logger.warning("progress_callback error: %s", e)
 
 
+def _find_executable(env_name: str, names: tuple[str, ...]) -> Optional[str]:
+    """Resolve a configured binary or installed command to an absolute path."""
+    env_value = os.environ.get(env_name, "").strip()
+    if env_value:
+        candidate = os.path.expanduser(env_value)
+        candidate = shutil.which(candidate) or candidate
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate)
+        raise RuntimeError(f"{env_name} points to a missing or non-executable file: {env_value}")
+    for name in names:
+        path = shutil.which(name)
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return os.path.abspath(path)
+    return None
+
+
 # ── Driver factory ────────────────────────────────────────────────────────────
 
-def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
-    """
-    Return a headless Chrome WebDriver fully configured to impersonate a
-    real Google Pixel 10 Pro running Android 16 / Chrome 149.
-
-    Spoofing layers (applied in order):
-      1. Chrome launch flags   – mobile emulation, reduced UA, anti-detection
-      2. CDP commands          – authoritative screen metrics, UA client hints,
-                                 touch emulation
-      3. JS injection          – navigator props, WebGL GPU, battery, network,
-                                 chrome runtime object, plugins
-    """
+def _build_driver(profile: DeviceProfile, display_override: Optional[str] = None) -> webdriver.Chrome:
+    """Launch Chrome emulating the given mobile device (Pixel 11 Pro by
+    default) — real Android Chrome UA/client-hints via CDP, matching screen
+    geometry, and the navigator/WebGL/battery fingerprint from device_simulator.py."""
     options = Options()
+    options.page_load_strategy = "normal"  # Restore the original complete-page loading behavior.
 
-    if config.HEADLESS:
+    if config.HEADLESS and not display_override:
         options.add_argument("--headless=new")
 
     if getattr(config, "PROXY", None):
@@ -86,7 +100,13 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-extensions")
+    from admin_store import STORE
+    extension_paths = STORE.extensions()
+    if extension_paths:
+        options.add_argument('--load-extension=' + ','.join(extension_paths))
+        options.add_argument('--disable-extensions-except=' + ','.join(extension_paths))
+    else:
+        options.add_argument('--disable-extensions')
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-notifications")
     options.add_argument("--mute-audio")
@@ -100,9 +120,15 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
     options.add_argument("--lang=en-US")
 
-    # ── Window size = Pixel 10 Pro CSS viewport ───────────────────────────────
-    w, h = profile.screen_width, profile.screen_height
-    options.add_argument(f"--window-size={w},{h}")
+    # ── Mobile viewport (CSS pixels; CDP sets the real device scale factor) ──
+    options.add_argument(f"--window-size={profile.screen_width},{profile.screen_height}")
+
+    # ── User-Agent at launch, not just via CDP after launch ───────────────────
+    # A reference implementation that DOES get recognized as the exact model
+    # on Google's own device-security page sets this as a Chrome launch flag
+    # in addition to the post-launch Network.setUserAgentOverride CDP call
+    # below — this bakes the UA identity in from process start instead of
+    # switching it after Chrome already initialized with the default one.
     options.add_argument(f"--user-agent={profile.user_agent}")
 
     # ── Anti-detection ────────────────────────────────────────────────────────
@@ -110,85 +136,105 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    # ── Chrome-level mobile emulation ─────────────────────────────────────────
-    # Reduced UA: "Android 10; K" — device model intentionally absent (Chrome 110+)
-    mobile_emulation = {
-        "deviceMetrics": {
-            "width":      w,
-            "height":     h,
-            "pixelRatio": profile.pixel_ratio,
-            "touch":      True,
-        },
-        "userAgent": profile.user_agent,
-    }
-    options.add_experimental_option("mobileEmulation", mobile_emulation)
-
     # ── Launch browser ────────────────────────────────────────────────────────
-    chromium_binary = shutil.which("chromium") or shutil.which("chromium-browser")
-    if chromium_binary:
-        options.binary_location = chromium_binary
+    # On Railway/Docker always use the system-provided Chromium and matching
+    # chromedriver. Downloading a random latest driver causes version mismatch
+    # and unreliable launches, and also breaks in offline/restricted builds.
+    browser_binary = _find_executable(
+        "CHROME_BIN", ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "chrome")
+    )
+    if not browser_binary:
+        raise RuntimeError(
+            "Chrome/Chromium not installed. Use the supplied Dockerfile on Railway "
+            "(it installs chromium and chromium-driver)."
+        )
+    options.binary_location = browser_binary
+
+    driver_binary = _find_executable("CHROMEDRIVER_PATH", ("chromedriver",))
+    if not driver_binary:
+        # Convenience fallback for local development, particularly Windows.
+        # Railway should NEVER use webdriver-manager: use Dockerfile binaries.
+        if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+            raise RuntimeError(
+                "ChromeDriver is missing on Railway. Check that Railway is building "
+                "with Dockerfile and CHROMEDRIVER_PATH=/usr/bin/chromedriver."
+            )
+        try:
+            candidate = ChromeDriverManager().install()
+            if not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+                folder = os.path.dirname(candidate)
+                matches = [os.path.join(folder, fname)
+                           for fname in ("chromedriver", "chromedriver.exe")]
+                candidate = next((p for p in matches
+                                  if os.path.isfile(p) and os.access(p, os.X_OK)), "")
+            driver_binary = candidate
+        except Exception as exc:
+            logger.warning("Driver download failed: %s", exc)
+    if not driver_binary:
+        raise RuntimeError(
+            "Could not find ChromeDriver. On Railway use Dockerfile; locally "
+            "install a matching ChromeDriver or set CHROMEDRIVER_PATH."
+        )
+
+    logger.info("Using Chrome/Chromium: %s", browser_binary)
+    logger.info("Using ChromeDriver: %s", driver_binary)
+    # When the user needs an interactive payment form, Chrome is visible on a
+    # private virtual display. Leave the existing sign-in routine untouched.
+    driver_env = dict(os.environ)
+    if display_override:
+        driver_env['DISPLAY'] = display_override
+    driver = webdriver.Chrome(service=Service(executable_path=driver_binary, env=driver_env), options=options)
+
+    # ── Mobile emulation (CDP) ─────────────────────────────────────────────────
+    # Real Android Chrome UA reduction means the UA string alone never reveals
+    # the device; Google reads the actual model from the Sec-CH-UA-* client
+    # hints, so both must be set together via Network.setUserAgentOverride.
     try:
-        chromedriver_path = shutil.which("chromedriver") or ChromeDriverManager().install()
-        # 修复 webdriver-manager 在 Windows 上误匹配到非 .exe 文件的问题（例如 THIRD_PARTY_NOTICES.chromedriver）
-        if not chromedriver_path.lower().endswith(".exe"):
-            dir_name = os.path.dirname(chromedriver_path)
-            candidate = os.path.join(dir_name, "chromedriver.exe")
-            if os.path.exists(candidate):
-                chromedriver_path = candidate
-            else:
-                # 向下遍历搜索 chromedriver.exe
-                found = False
-                for root, dirs, files in os.walk(dir_name):
-                    if "chromedriver.exe" in files:
-                        chromedriver_path = os.path.join(root, "chromedriver.exe")
-                        found = True
-                        break
-                # 如果没找到，尝试在父目录遍历搜索
-                if not found:
-                    parent_dir = os.path.dirname(dir_name)
-                    for root, dirs, files in os.walk(parent_dir):
-                        if "chromedriver.exe" in files:
-                            chromedriver_path = os.path.join(root, "chromedriver.exe")
-                            break
-        service = Service(executable_path=chromedriver_path)
-    except Exception as e:
-        logger.warning("webdriver_manager failed, falling back to local: %s", e)
-        chromedriver_binary = shutil.which("chromedriver") or "chromedriver"
-        service = Service(executable_path=chromedriver_binary)
-    driver = webdriver.Chrome(service=service, options=options)
+        driver.execute_cdp_cmd('Network.enable', {})
+        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+            'userAgent': profile.user_agent,
+            'acceptLanguage': 'en-US,en;q=0.9',
+            'platform': 'Android',
+            'userAgentMetadata': profile.client_hints_metadata(),
+        })
+        # Network.setUserAgentOverride's userAgentMetadata alone only makes
+        # Chrome send the Sec-CH-UA-* headers once the SERVER has first
+        # opted in via Accept-CH — the very first request to a new origin
+        # can go out without them. Setting them explicitly here guarantees
+        # Google's server sees the real model on every request, including
+        # the first one (this is what a working reference implementation
+        # does, confirmed via a real screenshot where it worked).
+        driver.execute_cdp_cmd('Network.setExtraHTTPHeaders', {
+            'headers': profile.client_hints_headers(),
+        })
+        driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+            'width': profile.screen_width,
+            'height': profile.screen_height,
+            'deviceScaleFactor': profile.pixel_ratio,
+            'mobile': True,
+        })
+        driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
+            'enabled': True,
+            'maxTouchPoints': profile.max_touch_points,
+        })
+        # Applies to every document loaded from here on (sign-in, Google One,
+        # checkout) — not just the current page.
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': profile.navigator_js(),
+        })
+    except Exception as exc:
+        # Never let a fingerprint-spoofing step abort a real activation —
+        # Chrome still works as a (less convincing) desktop browser without it.
+        logger.warning("Mobile emulation setup failed; continuing without full device spoofing: %s", exc)
 
-    # ── CDP layer 1: authoritative screen metrics + touch ─────────────────────
-    driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
-        "width":             w,
-        "height":            h,
-        "deviceScaleFactor": profile.pixel_ratio,
-        "mobile":            True,
-        "screenWidth":       w,
-        "screenHeight":      h,
-        "positionX":         0,
-        "positionY":         0,
-    })
-
-    # ── CDP layer 2: User-Agent + full Sec-CH-UA-* client hints ──────────────
-    # This is what Google reads to know the real device behind the reduced UA.
-    driver.execute_cdp_cmd("Emulation.setUserAgentOverride", {
-        "userAgent":         profile.user_agent,
-        "acceptLanguage":    "en-US,en;q=0.9",
-        "platform":          "Linux armv8l",
-        "userAgentMetadata": profile.client_hints_metadata(),
-    })
-
-    # ── CDP layer 3: multitouch emulation ────────────────────────────────────
-    driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {
-        "enabled":       True,
-        "maxTouchPoints": profile.max_touch_points,
-    })
-
-    # ── CDP layer 4: JS navigator/WebGL/battery/network spoofing ─────────────
-    # Injected before every page's own JS runs.
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": profile.navigator_js()
-    })
+    # NOTE: we deliberately do NOT run the spoofing self-check here. At this
+    # point the browser is still on its initial blank startup page (not a
+    # real https:// document yet), and navigator.userAgentData is only ever
+    # populated on a real secure-origin page — on the blank page it is always
+    # undefined, which made this check always report "no-high-entropy-api"
+    # regardless of whether the spoofing actually works. See
+    # _log_device_spoofing_self_check(), called instead right after the first
+    # real navigation (the Google sign-in page) in _gmail_login().
 
     driver.implicitly_wait(config.IMPLICIT_WAIT)
     driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
@@ -248,7 +294,7 @@ def _enter_totp(driver: webdriver.Chrome, totp_secret: str,
     """Generate a fresh TOTP code and fill it into the visible input. Returns True on submit."""
     code = _generate_totp(totp_secret)
     secs_left = 30 - (int(time.time()) % 30)
-    _report(cb, f"🔢 正在输入身份验证器验证码: `{code}` (该验证码还剩 {secs_left}秒 有效)", driver)
+    _report(cb, f"🔢 Entering the authenticator code (valid for {secs_left}s)", driver)
 
     # Find the visible TOTP input field
     totp_field = None
@@ -271,7 +317,7 @@ def _enter_totp(driver: webdriver.Chrome, totp_secret: str,
             continue
 
     if not totp_field:
-        _report(cb, "⚠️ 当前页面未找到二步验证（TOTP）输入框", driver)
+        _report(cb, "⚠️ The 2FA authenticator input was not found on this page.", driver)
         return False
 
     totp_field.clear()
@@ -418,27 +464,27 @@ def _handle_2fa(driver: webdriver.Chrome, totp_secret: str,
     """
     hostname = urlparse(driver.current_url).hostname or ""
     if "accounts.google.com" not in hostname:
-        _report(cb, "ℹ️ 步骤 4/6 — 未检测到二步验证挑战，已成功登录", driver)
+        _report(cb, "ℹ️ Step 4/6 — No 2FA challenge detected; signed in.", driver)
         return
 
     src = driver.page_source.lower()
     path = urlparse(driver.current_url).path
-    _report(cb, f"🔐 步骤 4/6 — 二步验证挑战页面\n📍 路径: {path}", driver)
+    _report(cb, f"🔐 Step 4/6 — Two-step verification required\n📍 Path: {path}", driver)
 
     # ── Stage 1: g.co/sc device-code page → click "Try another way" ──────────
     if "g.co/sc" in src:
         _report(cb,
-                "🔄 步骤 4a — 检测到 g.co/sc 页面 (设备浏览器验证码)。\n"
-                "正在点击 '尝试其他方式' 以切换到身份验证器应用…",
+                "🔄 Step 4a — g.co/sc device verification detected.\n"
+                "Selecting 'Try another way' to use the authenticator app…",
                 driver)
         clicked = _click_try_another_way(driver)
         time.sleep(2)
         src = driver.page_source.lower()
         path = urlparse(driver.current_url).path
         _report(cb,
-                f"{'✅' if clicked else '⚠️'} 步骤 4a — "
-                f"{'已成功离开 g.co/sc 页面' if clicked else '未找到“尝试其他方式”选项'}\n"
-                f"📍 当前路径: {path}",
+                f"{'✅' if clicked else '⚠️'} Step 4a — "
+                f"{'Left the g.co/sc page' if clicked else 'Try another way was not found'}\n"
+                f"📍 Current path: {path}",
                 driver)
 
     # ── Stage 2: Method selection page → pick Authenticator app ──────────────
@@ -451,8 +497,8 @@ def _handle_2fa(driver: webdriver.Chrome, totp_secret: str,
 
     if has_authenticator_option and not has_totp_input:
         _report(cb,
-                "🔍 步骤 4b — 二步验证方式选择页面。\n"
-                "正在选择 '谷歌身份验证器' 选项…",
+                "🔍 Step 4b — Verification method selection.\n"
+                "Selecting the authenticator app…",
                 driver)
 
         # Log the clickable items on the page to aid debugging
@@ -469,7 +515,7 @@ def _handle_2fa(driver: webdriver.Chrome, totp_secret: str,
                 return out.join('\\n');
                 """
             )
-            _report(cb, f"📋 页面选项:\n{items_info or '(无)'}", driver)
+            _report(cb, f"📋 Available options:\n{items_info or '(none)'}", driver)
         except Exception:
             pass
 
@@ -487,31 +533,31 @@ def _handle_2fa(driver: webdriver.Chrome, totp_secret: str,
                     )
                 )
                 _report(cb,
-                        f"✅ 步骤 4b — 二步验证码输入框已加载\n"
-                        f"📍 当前路径: {urlparse(driver.current_url).path}",
+                        f"✅ Step 4b — Authenticator code field is ready\n"
+                        f"📍 Current path: {urlparse(driver.current_url).path}",
                         driver)
             except Exception:
                 _report(cb,
-                        f"⚠️ 步骤 4b — 等待超时，未找到二步验证码输入框\n"
-                        f"📍 当前路径: {urlparse(driver.current_url).path}",
+                        f"⚠️ Step 4b — Timed out waiting for the authenticator field\n"
+                        f"📍 Current path: {urlparse(driver.current_url).path}",
                         driver)
         else:
-            _report(cb, "⚠️ 步骤 4b — 无法点击身份验证器选项", driver)
+            _report(cb, "⚠️ Step 4b — Could not choose the authenticator option.", driver)
             time.sleep(2)
 
     # ── Stage 3: TOTP input page → enter the code ────────────────────────────
     time.sleep(0.5)
-    _report(cb, "🔑 步骤 4c — 正在输入身份验证器二步验证码…", driver)
+    _report(cb, "🔑 Step 4c — Entering authenticator code…", driver)
     submitted = _enter_totp(driver, totp_secret, cb)
     if submitted:
         time.sleep(3)
         _report(cb,
-                f"✅ 步骤 4 — 二步验证码已提交\n📍 URL: {driver.current_url[:80]}",
+                f"✅ Step 4 — Verification code submitted\n📍 URL: {driver.current_url[:80]}",
                 driver)
     else:
         _report(cb,
-                "⚠️ 步骤 4 — 未能找到二步验证输入框。\n"
-                f"📍 当前页面: {urlparse(driver.current_url).path}",
+                "⚠️ Step 4 — Could not locate the 2FA input.\n"
+                f"📍 Current page: {urlparse(driver.current_url).path}",
                 driver)
 
 
@@ -521,11 +567,57 @@ def _generate_totp(secret: str) -> str:
     totp = pyotp.TOTP(clean_secret)
     code = totp.now()
     secs_left = 30 - (int(time.time()) % 30)
-    logger.info("Generated TOTP: %s (%ds left)", code, secs_left)
+    logger.info("Generated a TOTP code (%ds left)", secs_left)
     return code
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
+
+def _log_device_spoofing_self_check(driver: webdriver.Chrome) -> None:
+    """Log what the CURRENT page's navigator actually reports. Must be called
+    after a real https:// navigation — navigator.userAgentData only exists on
+    a real secure-origin document (never on the blank page Chrome starts on),
+    so calling this before any navigation always reports "no-high-entropy-api"
+    even when the CDP spoofing in _build_driver() is working correctly. A
+    Google page choosing to display just "Android" (not "Pixel 11 Pro") in
+    its own UI proves nothing either way: the device model is a
+    "high-entropy" client hint Chrome only ever sends when the page itself
+    explicitly asks for it via JS, and most Google account-security screens
+    may never do — so even a REAL physical Pixel 11 Pro signing in through a
+    browser (not the Google app) could show the same generic "Android"
+    there. This checks the one thing we actually control and can verify:
+    that our own override is live in the browser itself, independent of
+    what any given Google page chooses to display."""
+    try:
+        check = driver.execute_script(
+            "return JSON.stringify({"
+            "mobile: !!(navigator.userAgentData && navigator.userAgentData.mobile),"
+            "platform: navigator.platform,"
+            "touchPoints: navigator.maxTouchPoints,"
+            "ua: navigator.userAgent"
+            "});"
+        )
+        logger.info("Device spoofing check (Pixel 11 Pro) — %s", check)
+    except Exception as exc:
+        logger.debug("Device spoofing check unavailable: %s", exc)
+
+    # The model itself is a high-entropy hint, only obtainable via this async
+    # API (never from a plain header or navigator.platform) — this is what a
+    # page would see if it actually asked, which is the real test of whether
+    # "Pixel 11 Pro" is being reported correctly.
+    try:
+        model_check = driver.execute_async_script(
+            "var cb = arguments[arguments.length - 1];"
+            "if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {"
+            "  navigator.userAgentData.getHighEntropyValues(['model','platformVersion','architecture'])"
+            "    .then(function(v){ cb(JSON.stringify(v)); })"
+            "    .catch(function(e){ cb('error: ' + e); });"
+            "} else { cb('no-high-entropy-api'); }"
+        )
+        logger.info("Device spoofing check (high-entropy model hint) — %s", model_check)
+    except Exception as exc:
+        logger.debug("High-entropy device check unavailable: %s", exc)
+
 
 def _gmail_login(driver: webdriver.Chrome, email: str, password: str,
                  totp_secret: Optional[str] = None,
@@ -537,12 +629,13 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str,
     """
     try:
         # ── 步骤 1: 加载登录页面 ───────────────────────────────────────────
-        _report(cb, "🌐 步骤 1/6 — 正在加载 Google 登录页面…", driver)
+        _report(cb, "🌐 Step 1/6 — Opening Google sign-in…", driver)
         driver.get(config.GMAIL_LOGIN_URL)
         time.sleep(2)
+        _log_device_spoofing_self_check(driver)
 
         # ── 步骤 2: 输入邮箱 ───────────────────────────────────────────────
-        _report(cb, f"📧 步骤 2/6 — 正在输入邮箱: {email}", driver)
+        _report(cb, f"📧 Step 2/6 — Entering email: {email}", driver)
         email_field = _wait_for(driver, By.CSS_SELECTOR,
                                 'input[name="identifier"], input[type="email"]')
         email_field.clear()
@@ -551,7 +644,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str,
         time.sleep(2)
 
         # ── 步骤 3: 输入密码 ────────────────────────────────────────────
-        _report(cb, "🔒 步骤 3/6 — 正在输入密码…", driver)
+        _report(cb, "🔒 Step 3/6 — Entering password…", driver)
         password_field = _wait_for(driver, By.CSS_SELECTOR,
                                    'input[type="password"]')
         password_field.clear()
@@ -561,7 +654,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str,
 
         # ── 步骤 4: 二步验证 / TOTP ────────────────────────────────────────────────
         if totp_secret:
-            _report(cb, "🔐 步骤 4/6 — 正在检查二步验证挑战…", driver)
+            _report(cb, "🔐 Step 4/6 — Checking two-step verification…", driver)
             _handle_2fa(driver, totp_secret, cb)
 
         # ── Step 5: Verify login ──────────────────────────────────────────────
@@ -571,34 +664,38 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str,
         path = parsed.path or ""
 
         # Check for visible error text
+        driver.implicitly_wait(0)
         try:
             error_el = driver.find_element(
                 By.CSS_SELECTOR, '[jsname="B34EJ"], [aria-live="assertive"]'
             )
             if error_el.text.strip():
                 _report(cb,
-                        f"❌ 步骤 5/6 — 登录出错: {error_el.text.strip()}",
+                        f"❌ Step 5/6 — Sign-in error: {error_el.text.strip()}",
                         driver)
                 return False
         except NoSuchElementException:
             pass
 
+        finally:
+            driver.implicitly_wait(config.IMPLICIT_WAIT)
+
         if (hostname == "myaccount.google.com"
                 or (hostname.endswith(".google.com") and "/u/" in path)):
-            _report(cb, "✅ 步骤 5/6 — 登录成功！", driver)
+            _report(cb, "✅ Step 5/6 — Signed in successfully!", driver)
             return True
 
         if not (hostname == "accounts.google.com"
                 and path.startswith("/signin")):
             _report(cb,
-                    f"✅ 步骤 5/6 — 登录似乎成功\n"
-                    f"📍 链接: {current_url[:80]}",
+                    f"✅ Step 5/6 — Sign-in appears successful\n"
+                    f"📍 URL: {current_url[:80]}",
                     driver)
             return True
 
         _report(cb,
-                f"❌ 步骤 5/6 — 登录后仍停留在登录页面\n"
-                f"📍 链接: {current_url[:80]}",
+                f"❌ Step 5/6 — Still on the sign-in page\n"
+                f"📍 URL: {current_url[:80]}",
                 driver)
         return False
 
@@ -693,41 +790,58 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     return None
 
 
-def _navigate_google_one(driver: webdriver.Chrome,
-                         cb: ProgressCB = None) -> Optional[str]:
-    """Navigate Google One pages and return the Gemini offer link."""
-    for url in (config.GOOGLE_ONE_URL, config.GOOGLE_ONE_OFFERS_URL):
-        try:
-            _report(cb, f"🔍 步骤 6/6 — 正在扫描页面: {url}", driver)
-            driver.get(url)
-            time.sleep(3)
+def _navigate_google_one(driver: webdriver.Chrome, cb: ProgressCB = None,
+                         interactive: bool = False) -> tuple[Optional[str], bool]:
+    """Step 6: select Annual > Google AI Pro > Add card.
 
-            for selector in (
-                '[aria-label="Accept all"]',
-                'button[jsname="higCR"]',
-                '[data-action="accept"]',
-            ):
-                try:
-                    driver.find_element(By.CSS_SELECTOR, selector).click()
-                    time.sleep(1)
-                    break
-                except NoSuchElementException:
-                    pass
+    The interactive mode leaves the real Google payment form open for the user.
+    The bot does not enter payment details or confirm a purchase.
+    Returns (captured_google_checkout_url_or_none, pro_button_was_clicked).
+    """
+    pro_clicked = False
 
-            _report(cb, f"🔎 正在页面中搜索 Gemini 优惠链接…", driver)
-            link = _extract_payment_link(driver)
-            if link:
-                _report(cb,
-                        f"🎯 成功找到优惠链接！\n🔗 {link}",
-                        driver)
-                return link
-            else:
-                _report(cb, f"😔 在 {url} 页面未检测到优惠链接，尝试下一个页面…", driver)
+    def stage_message(message, page):
+        nonlocal pro_clicked
+        if 'Clicked Get Google AI Pro (Annual)' in message:
+            pro_clicked = True
+        # Diagnostic photos for each Google One stage, before manual control.
+        _report(cb, message, page, crop_bottom=True)
 
-        except (TimeoutException, WebDriverException) as exc:
-            _report(cb, f"⚠️ 加载 {url} 出错: {exc}", driver)
+    # Selector fallbacks already have their own polling deadline. An implicit
+    # wait per missing XPath multiplies latency across every fallback selector.
+    driver.implicitly_wait(0)
+    try:
+        offer_link = open_annual_ai_pro_checkout(
+            driver, config.GOOGLE_ONE_AI_URL, progress=stage_message,
+            final_photo=None,
+        )
+    finally:
+        driver.implicitly_wait(config.IMPLICIT_WAIT)
+    if not pro_clicked:
+        return offer_link, False
 
-    return None
+    def card_message(message, page):
+        _report(cb, message, page, crop_bottom=True)
+
+    # Disable implicit Selenium waits *only* while scanning the already-open
+    # Google checkout. Nested-frame probes must not each consume 10 seconds.
+    # If Add card is slow to appear, hand the live page to the Mini App user.
+    try:
+        driver.implicitly_wait(0)
+        card_opened = open_add_card_dialog(driver, progress=card_message, timeout=8)
+    finally:
+        driver.implicitly_wait(config.IMPLICIT_WAIT)
+    # This photo is taken before the user has entered their payment data.
+    if cb:
+        screenshot = _shot(driver, crop_bottom=True) if getattr(cb, "capture_screenshots", True) else None
+        if screenshot:
+            cb('📸 Step 6/6 — Google AI Pro Annual checkout. '
+               + ('Add card form opened.' if card_opened else 'Payment dialog opened.')
+               + (' Use the private interactive window to complete checkout.'
+                  if interactive else ' Payment has not been confirmed.'), screenshot)
+        else:
+            cb('✅ Step 6/6 — Google payment page reached. Payment not confirmed.', None)
+    return offer_link, True
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -740,7 +854,8 @@ def check_gemini_offer(email: str, password: str,
                        device: DeviceProfile,
                        totp_secret: Optional[str] = None,
                        progress_callback: ProgressCB = None,
-                       manual_login: bool = False) -> Optional[str]:
+                       manual_login: bool = False,
+                       remote_session=None) -> Optional[str]:
     """
     Main entry point.
 
@@ -751,25 +866,34 @@ def check_gemini_offer(email: str, password: str,
     at every key step so the caller can relay live updates to Telegram.
     """
     driver: Optional[webdriver.Chrome] = None
+    keep_browser = False
+    in_stage_six = False
     try:
+        if remote_session is not None:
+            remote_session.start_display()
         _report(progress_callback,
-                f"🤖 正在启动 Pixel 10 Pro 模拟器\n"
-                f"📱 会话: {device.session_id[:8]}…\n"
-                f"🌐 User-Agent: {device.user_agent[:60]}…")
+                "📱 Starting Chrome (Pixel 11 Pro) browser session")
 
-        driver = _build_driver(device)
-        _report(progress_callback, "✅ 浏览器启动成功", driver)
+        driver = _build_driver(device, display_override=remote_session.display if remote_session else None)
+        if remote_session is not None:
+            if remote_session.closed:
+                raise GoogleAutomationError('Browser was closed')
+            # Show the same Chrome window immediately, read-only while the bot
+            # performs login and plan selection; never start a second browser.
+            remote_session.attach_driver(driver)
+            remote_session.phase = '🌐 Chrome started · automatic steps in progress'
+        _report(progress_callback, "✅ Browser started successfully", driver)
 
         if manual_login:
             # 开启手动登录页面
-            _report(progress_callback, "🌐 正在加载谷歌登录页面...", driver)
+            _report(progress_callback, "🌐 Opening Google sign-in…", driver)
             driver.get(config.GMAIL_LOGIN_URL)
             print("\n" + "="*60)
-            print("👉 请在弹出的浏览器窗口中完成 Google 账号登录（手动输入账号、密码并完成两步验证）。")
-            print("👉 登录成功并看到您的谷歌账号主页后，请返回此终端窗口，按【回车键】继续自动化检测优惠...")
+            print("👉 Complete your Google sign-in in the browser window (email, password, and 2FA).")
+            print("👉 Once signed in, return to the terminal and press Enter to open the Google AI Pro offer.")
             print("="*60 + "\n")
-            input("按【回车键】继续...")
-            _report(progress_callback, "✅ 手动登录确认完成，开始检测 Google One 优惠...", driver)
+            input("Press Enter to continue…")
+            _report(progress_callback, "✅ Manual sign-in complete. Opening the Google AI Pro offer…", driver)
         else:
             logged_in = _gmail_login(
                 driver, email, password,
@@ -778,23 +902,49 @@ def check_gemini_offer(email: str, password: str,
             )
             if not logged_in:
                 raise GoogleAutomationError(
-                    "登录失败 — 请检查您的账号和密码。"
+                    "Google sign-in did not complete. Check the last screenshot; a timeout does not prove incorrect credentials."
                 )
 
-        offer_link = _navigate_google_one(driver, cb=progress_callback)
+        # A code authorizes exactly one successful Google login, even if a later step fails.
+        if remote_session is not None:
+            from admin_store import STORE
+            if remote_session.closed or not STORE.consume(remote_session.token):
+                raise GoogleAutomationError('Session cancelled or code revoked')
+        in_stage_six = True
+        offer_link, pro_clicked = _navigate_google_one(
+            driver, cb=progress_callback, interactive=remote_session is not None,
+        )
+        if remote_session is not None and remote_session.closed:
+            raise GoogleAutomationError('Browser was closed')
+        if remote_session is not None and pro_clicked:
+            # Chrome stays alive, and no further screenshots or keystrokes are
+            # captured by the bot. The user controls Google Payments directly.
+            remote_session.attach_driver(driver)
+            remote_session.interactive_enabled = True
+            remote_session.phase = '💳 Checkout ready · manual control enabled'
+            # No time limit; close manually or via the configured completion URL.
+            keep_browser = True
         return offer_link
 
+    except Exception as exc:
+        # Capture the last visible page before the existing cleanup closes it.
+        _report(progress_callback, f"⚠️ Last browser screen before stopping ({type(exc).__name__})", driver, crop_bottom=in_stage_six)
+        raise
     finally:
-        if driver:
+        if remote_session is not None and not keep_browser:
+            remote_session.ready = False
+            remote_session.driver = None
+            remote_session.stop()
+        if driver and not keep_browser:
             try:
                 # 如果是有头模式（显示界面），提示用户确认后再关闭浏览器，防止窗口瞬间关闭
-                if not config.HEADLESS:
+                if not config.HEADLESS and remote_session is None:
                     print("\n" + "="*60)
-                    print("💡 流程已结束。为方便您查看/操作页面，浏览器窗口已保留。")
-                    print("👉 请在终端中按【回车键】关闭浏览器并退出程序...")
+                    print("💡 The process is complete. The browser window is still open for review.")
+                    print("👉 Press Enter in the terminal to close the browser and exit.")
                     print("="*60 + "\n")
-                    input("按【回车键】关闭浏览器并退出...")
-                _report(progress_callback, "🧹 正在关闭浏览器会话…")
+                    input("Press Enter to close the browser…")
+                logger.info("Closing browser session")
                 driver.quit()
             except Exception:
                 pass

@@ -10,11 +10,11 @@ from device_simulator import create_device_profile
 from google_automation import check_gemini_offer
 
 def main():
-    print("🤖 Pixel 10 Pro Google One Gemini Offer CLI 🤖")
+    print("🤖 Pixel 11 Pro Google One Gemini Offer CLI 🤖")
     print("==================================================")
     
     # 选项：完全手动登录
-    manual_login = input("是否选择完全手动登录 (在弹出的浏览器中手动输账号密码) (y/n, 默认 n): ").strip().lower() == 'y'
+    manual_login = input("Use manual sign-in in the browser? (y/n, default n): ").strip().lower() == 'y'
     
     email = ""
     password = ""
@@ -22,32 +22,32 @@ def main():
     
     if manual_login:
         config.HEADLESS = False
-        print("💡 已启用【手动登录模式】，系统将自动开启浏览器展示界面。")
+        print("💡 Manual sign-in mode enabled. A browser window will open.")
     else:
-        email = input("请输入 Gmail 邮箱: ").strip()
+        email = input("Enter Gmail email: ").strip()
         if not email:
-            print("❌ 邮箱不能为空！")
+            print("❌ Gmail email is required.")
             return
             
-        password = getpass.getpass("请输入密码: ").strip()
+        password = getpass.getpass("Enter your password: ").strip()
         if not password:
-            print("❌ 密码不能为空！")
+            print("❌ Password is required.")
             return
             
-        totp = input("请输入 2FA 密钥 (若无 2FA 请直接回车): ").strip()
+        totp = input("Enter your 2FA authenticator secret (or leave blank): ").strip()
         if totp:
             totp = totp.upper().replace(" ", "")
         else:
             totp = None
             
         # 允许选择是否开启浏览器界面
-        show_browser = input("是否显示浏览器界面进行调试 (y/n, 默认 n): ").strip().lower() == 'y'
+        show_browser = input("Show the browser for debugging? (y/n, default n): ").strip().lower() == 'y'
         if show_browser:
             config.HEADLESS = False
-            print("💡 已设置为【有头模式】(您将能看到浏览器自动操作界面，便于观察和手动干预)")
+            print("💡 Visible browser mode enabled.")
         else:
             config.HEADLESS = True
-            print("💡 已设置为【无头模式】(浏览器在后台静默运行)")
+            print("💡 Headless browser mode enabled.")
         
     device = create_device_profile()
     
@@ -60,7 +60,7 @@ def main():
             except Exception:
                 pass
 
-    print("\n🚀 开始运行自动化流程...")
+    print("\n🚀 Starting automation…")
     try:
         offer_link = check_gemini_offer(
             email=email,
@@ -72,12 +72,12 @@ def main():
         )
         print("\n==================================================")
         if offer_link:
-            print("🎉 成功检测到 12 个月 Gemini Pro 优惠链接！")
-            print(f"🔗 链接地址: {offer_link}")
+            print("✅ Google AI Pro Annual checkout link captured. No payment confirmed.")
+            print(f"🔗 Link: {offer_link}")
         else:
-            print("😔 未在当前账号检测到活动中的优惠链接 (可能是已领过或不满足活动条件)")
+            print("ℹ️ No standalone checkout link was captured. Check the final screenshot. No payment confirmed.")
     except Exception as e:
-        print(f"\n❌ 运行异常出错: {e}")
+        print(f"\n❌ Error: {e}")
 
 if __name__ == "__main__":
     main()
