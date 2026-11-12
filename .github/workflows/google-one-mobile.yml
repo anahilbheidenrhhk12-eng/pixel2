@@ -9,6 +9,8 @@ on:
       - "main.py"
       - "remote_checkout.py"
       - "tests/test_google_one_mobile_probe.py"
+      - "tests/test_google_one_codefree.py"
+      - "telegram_miniapp.py"
       - ".github/workflows/google-one-mobile.yml"
   workflow_dispatch:
 
@@ -25,3 +27,5 @@ jobs:
         run: python3 -m py_compile main.py google_automation.py google_one_mobile_probe.py remote_checkout.py
       - name: Run Google One mobile tests
         run: python3 -m unittest discover -s tests -p "test_google_one_mobile_probe.py" -v
+      - name: Verify Google One code-free workflow
+        run: python3 -m unittest discover -s tests -p "test_google_one_codefree.py" -v
