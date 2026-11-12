@@ -246,6 +246,8 @@ class CheckoutRegistry:
             for session in sessions:
                 if session.closed or not session.interactive_enabled:
                     continue
+                if getattr(session, "google_one_mobile_probe", False):
+                    continue  # Probe is not an activation checkout window.
                 try:
                     await asyncio.to_thread(self._final_stage, session)
                 except Exception:
