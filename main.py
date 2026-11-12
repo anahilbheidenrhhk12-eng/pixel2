@@ -760,6 +760,8 @@ def main() -> None:
     app.add_handler(CommandHandler('menu',start))
     app.add_handler(CommandHandler('cancel',login_cancel))
     app.add_handler(CommandHandler('login',begin_login))
+    from native_google_one_bot import native_google_one_command
+    app.add_handler(CommandHandler('test_google_one', native_google_one_command))
     app.add_handler(CommandHandler('buy',buy_command))
     app.add_handler(CommandHandler('admin',admin_entry))
     app.add_handler(CommandHandler('id',my_id))
