@@ -429,6 +429,8 @@ async def start_http():
     from customer_portal import register
     register(app)
     from telegram_miniapp import miniapp_page, miniapp_auth, miniapp_status, miniapp_end, miniapp_connected, miniapp_viewport
+    from winpixel_bridge import register_routes as register_windows_pixel_routes
+    register_windows_pixel_routes(app)
     app.router.add_get('/', home)
     app.router.add_get('/miniapp', miniapp_page)
     async def keyboard_script(request):
