@@ -1,0 +1,46 @@
+name: Windows Google One launcher validation
+
+on:
+  push:
+    branches: [android-test]
+    paths:
+      - "start_google_one_windows.ps1"
+      - "START_GOOGLE_ONE_WINDOWS.bat"
+      - "native_google_one_probe.py"
+      - ".github/workflows/windows-google-one.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PowerShell launcher syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'start_google_one_windows.ps1').Path,
+            [ref]$tokens, [ref]$errors
+          )
+          if ($errors.Count) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'PowerShell script syntax failed validation.'
+          }
+          Write-Host 'PowerShell script syntax OK'
+      - name: Compile native Google One Python probe
+        shell: pwsh
+        run: python -m py_compile native_google_one_probe.py
+      - name: Check Windows batch wrapper
+        shell: pwsh
+        run: |
+          $wrapper = Get-Content START_GOOGLE_ONE_WINDOWS.bat -Raw
+          if ($wrapper -notmatch 'start_google_one_windows.ps1') {
+            throw 'Batch file does not invoke the PowerShell launcher'
+          }
+          Write-Host 'Windows launcher files are present'
