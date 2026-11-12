@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Google One native Android smoke test on an attached device or GitHub Actions AVD.
-No credentials, purchase, device attestation changes, or entitlement claims.
+"""Open the official Google One Android app after an Android-level Google login.
+
+On an interactive emulator/phone, sign in using Google's own account screen;
+then the Google One app can see the *same Android account*. A Chrome CDP login
+is a different browser session and cannot be transferred to an Android app.
+
+No account passwords, cookies, 2FA secrets, or purchase actions are captured.
 """
+
+import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,111 +19,217 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
-APP = "com.google.android.apps.subscriptions.red"
-OUT = Path("native_test_results")
-OUT.mkdir(exist_ok=True)
+GOOGLE_ONE = "com.google.android.apps.subscriptions.red"
+GOOGLE_PLAY = "com.android.vending"
 
-def adb(*args, timeout=35, binary=False):
-    proc = subprocess.run(["adb", *args], capture_output=True, timeout=timeout)
+
+def adb(*args, timeout=40, binary=False):
+    cmd = ["adb"]
+    if os.environ.get("ANDROID_SERIAL"):
+        cmd.extend(["-s", os.environ["ANDROID_SERIAL"]])
+    cmd.extend(str(arg) for arg in args)
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
     if binary:
-        return proc.returncode, proc.stdout, proc.stderr
-    return proc.returncode, proc.stdout.decode("utf-8","replace").strip(), proc.stderr.decode("utf-8","replace").strip()
+        return result.returncode, result.stdout, result.stderr
+    return (result.returncode, result.stdout.decode("utf-8", "replace").strip(),
+            result.stderr.decode("utf-8", "replace").strip())
+
 
 def getprop(name):
-    return adb("shell","getprop",name)[1]
+    return adb("shell", "getprop", name)[1]
 
-def capture(name):
-    code, data, error = adb("exec-out","screencap","-p",binary=True)
-    if code==0 and data.startswith(b"\x89PNG"):
-        (OUT/name).write_bytes(data)
-        return True
+
+def package_installed(package):
+    code, out, _ = adb("shell", "pm", "path", package)
+    return code == 0 and "package:" in out
+
+
+def android_google_account_present():
+    """Only return presence; never expose account names from dumpsys."""
+    code, out, _ = adb("shell", "dumpsys", "account")
+    if code:
+        return None
+    return bool(re.search(r"\btype=com\.google\b", out))
+
+
+def screenshot(outdir, filename, enabled):
+    if not enabled:
+        return
+    code, content, _ = adb("exec-out", "screencap", "-p", binary=True)
+    if code == 0 and content.startswith(b"\x89PNG"):
+        (outdir / filename).write_bytes(content)
+
+
+def dump_ui():
+    code, _, error = adb("shell", "uiautomator", "dump", "/sdcard/google_one_ui.xml", timeout=40)
+    if code:
+        return [], "uiautomator: " + error[:200]
+    code, out, error = adb("exec-out", "cat", "/sdcard/google_one_ui.xml")
+    if code:
+        return [], "UI pull: " + error[:200]
+    try:
+        root = ET.fromstring(out)
+    except ET.ParseError:
+        return [], "invalid UI XML"
+    return [node.attrib for node in root.iter("node")], None
+
+
+def tap_text(text_options):
+    items, error = dump_ui()
+    if error:
+        return False, error
+    for search in text_options:
+        for item in items:
+            labels = item.get("text", "") + " " + item.get("content-desc", "")
+            if search.casefold() not in labels.casefold():
+                continue
+            coords = re.findall(r"\d+", item.get("bounds", ""))
+            if len(coords) != 4:
+                continue
+            x1, y1, x2, y2 = map(int, coords)
+            code, _, _ = adb("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
+            return code == 0, search
+    return False, "not visible"
+
+
+def open_account_login():
+    """Start official Android account settings; Google manages credential entry."""
+    code, _, error = adb("shell", "am", "start", "-a", "android.settings.ADD_ACCOUNT_SETTINGS")
+    if code:
+        return False, error[:180]
+    return True, "opened Android add-account settings"
+
+
+def wait_for_account(seconds):
+    deadline = time.monotonic() + max(0, seconds)
+    while time.monotonic() < deadline:
+        if android_google_account_present() is True:
+            return True
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
     return False
 
-def nodes():
-    code, text, err = adb("shell","uiautomator","dump","/sdcard/googleone_probe.xml",timeout=45)
-    if code:
-        return [], err
-    code, xml, err = adb("exec-out","cat","/sdcard/googleone_probe.xml")
-    if code:
-        return [], err
-    try:
-        tree=ET.fromstring(xml)
-    except ET.ParseError as exc:
-        return [], str(exc)
-    return [n.attrib for n in tree.iter("node")], None
 
-def tap_label(phrases):
-    items, err=nodes()
-    if err:
-        return False, "UI dump failed: "+err
-    for phrase in phrases:
-        for item in items:
-            if phrase.casefold() in (item.get("text","")+" "+item.get("content-desc","")).casefold():
-                m=re.findall(r"\d+",item.get("bounds",""))
-                if len(m)==4:
-                    a,b,c,d=map(int,m)
-                    code,_,_=adb("shell","input","tap",str((a+c)//2),str((b+d)//2))
-                    return code==0, phrase
-    return False,"Not visible"
+def open_play_store_listing():
+    return adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d",
+               "market://details?id=" + GOOGLE_ONE, "-p", GOOGLE_PLAY)
 
-def main():
-    report={"at":datetime.now(timezone.utc).isoformat(),"outcome":"started"}
+
+def wait_for_package(seconds):
+    deadline = time.monotonic() + max(0, seconds)
+    while time.monotonic() < deadline:
+        if package_installed(GOOGLE_ONE):
+            return True
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return package_installed(GOOGLE_ONE)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Google One native Android sign-in and offer UI probe")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Wait for Android Google login and official Google One Play Store install")
+    parser.add_argument("--wait-seconds", type=int, default=240)
+    parser.add_argument("--apk", type=Path, help="Optional local Google One APK")
+    parser.add_argument("--screenshots", action="store_true", help="Save screenshots locally")
+    parser.add_argument("--result-dir", type=Path, default=Path("native_test_results"))
+    args = parser.parse_args(argv)
+    outdir = args.result_dir
+    outdir.mkdir(parents=True, exist_ok=True)
+    report = {"at": datetime.now(timezone.utc).isoformat(), "outcome": "starting"}
     try:
-        code,text,err=adb("devices")
-        online=[x.split()[0] for x in text.splitlines()[1:] if x.split()[1:]==["device"]]
-        if not online:
-            raise RuntimeError("No ADB online devices: "+err+" "+text)
-        report["serial"]=online[0]
-        for key,prop in (
-            ("model","ro.product.model"),("brand","ro.product.brand"),
-            ("android","ro.build.version.release"),("api","ro.build.version.sdk"),
-            ("fingerprint","ro.build.fingerprint")
-        ):
-            report[key]=getprop(prop)
-        report["google_play_installed"]=bool(adb("shell","pm","path","com.android.vending")[1])
-        report["google_play_services_installed"]=bool(adb("shell","pm","path","com.google.android.gms")[1])
-        report["google_one_installed"]=bool(adb("shell","pm","path",APP)[1])
-        print("Android:",report["android"],"API:",report["api"],"Model:",report["model"],flush=True)
+        code, devices, error = adb("devices")
+        online = [line.split()[0] for line in devices.splitlines()[1:]
+                  if line.split()[1:] == ["device"]]
+        if code or not online:
+            raise RuntimeError("ADB Android device unavailable: " + error[:100])
+        report["adb_online"] = True
+        report["model"] = getprop("ro.product.model")
+        report["android"] = getprop("ro.build.version.release")
+        report["api"] = getprop("ro.build.version.sdk")
+        report["google_play"] = package_installed(GOOGLE_PLAY)
+        report["google_play_services"] = package_installed("com.google.android.gms")
+        report["android_account_present"] = android_google_account_present()
+        report["google_one_installed"] = package_installed(GOOGLE_ONE)
+        print("Android", report["android"], "model", report["model"],
+              "Play Store", report["google_play"], flush=True)
+
+        # Browser/CDP Pixel identity is not an Android device identity.
+        if report["android_account_present"] is not True:
+            if not args.interactive:
+                report["outcome"] = "requires_android_google_login"
+                print("Android Google account is missing; interactive OS login is required.", flush=True)
+                return report
+            ok, reason = open_account_login()
+            if not ok:
+                report["outcome"] = "account_settings_failed"
+                report["reason"] = reason
+                return report
+            print("Sign in on Android using Google's own sign-in screen.", flush=True)
+            if not wait_for_account(args.wait_seconds):
+                report["outcome"] = "android_login_not_completed"
+                return report
+            report["android_account_present"] = True
+            print("Android Google account login detected.", flush=True)
+
+        if not report["google_one_installed"] and args.apk:
+            if not args.apk.is_file():
+                report["outcome"] = "apk_file_missing"
+                return report
+            code, output, error = adb("install", "-r", str(args.apk), timeout=100)
+            report["apk_install_ok"] = code == 0 and "Success" in output
+            if not report["apk_install_ok"]:
+                report["apk_install_error"] = (error or output)[:250]
+            report["google_one_installed"] = package_installed(GOOGLE_ONE)
+
         if not report["google_one_installed"]:
-            report["outcome"]="blocked_google_one_not_installed"
-            adb("shell","am","start","-a","android.intent.action.VIEW",
-                "-d","market://details?id="+APP)
-            time.sleep(3)
-            capture("google_one_play_store.png")
-            print("Google One native app is absent. Play Store page opened; no account is signed in.",flush=True)
-            return
-        code,out,err=adb("shell","monkey","-p",APP,"-c","android.intent.category.LAUNCHER","1")
-        report["launch_ok"]=code==0 and "Events injected: 1" in out
-        report["launch_error"]=err
-        time.sleep(4)
-        capture("google_one_native.png")
-        items,error=nodes()
-        report["ui_error"]=error
-        report["ui_text"]=[(x.get("text") or x.get("content-desc") or "")[:100] for x in items
-                            if x.get("text") or x.get("content-desc")][:30]
-        if not report["launch_ok"]:
-            report["outcome"]="failed_to_open_google_one"
-            return
-        report["outcome"]="google_one_app_opened"
-        success,detail=tap_label(["Settings","الإعدادات","Paramètres"])
-        report["settings"]={"found":success,"detail":detail}
-        if success:
-            time.sleep(2)
-            capture("google_one_settings.png")
-            success,detail=tap_label(["Check for offers","البحث عن عروض","Vérifier les offres"])
-            report["check_for_offers"]={"found":success,"detail":detail}
-            if success:
-                time.sleep(3)
-                capture("google_one_offers.png")
-                report["outcome"]="offer_check_screen_opened"
-    except Exception as exc:
-        report["outcome"]="error"
-        report["error"]=str(exc)
-        print("Native probe failed:",str(exc),file=sys.stderr)
-        raise
-    finally:
-        (OUT/"report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
-        print("RESULT:",json.dumps({k:v for k,v in report.items() if k!="ui_text"},ensure_ascii=False),flush=True)
+            if not report["google_play"]:
+                report["outcome"] = "google_play_unavailable"
+                return report
+            code, _, err = open_play_store_listing()
+            if code:
+                report["outcome"] = "google_one_play_listing_failed"
+                report["reason"] = err[:200]
+                return report
+            screenshot(outdir, "google_one_play_store.png", args.screenshots)
+            if not args.interactive:
+                report["outcome"] = "google_one_install_required"
+                return report
+            print("Install official Google One from Play Store on the Android screen.", flush=True)
+            if not wait_for_package(args.wait_seconds):
+                report["outcome"] = "google_one_install_not_completed"
+                return report
+            report["google_one_installed"] = True
 
-if __name__=="__main__":
+        code, output, err = adb("shell", "monkey", "-p", GOOGLE_ONE,
+                                "-c", "android.intent.category.LAUNCHER", "1")
+        report["launch_ok"] = code == 0 and "Events injected: 1" in output
+        if not report["launch_ok"]:
+            report["outcome"] = "google_one_launch_failed"
+            report["reason"] = err[:170]
+            return report
+        time.sleep(3)
+        screenshot(outdir, "google_one_open.png", args.screenshots)
+        report["outcome"] = "google_one_opened_with_android_account"
+        ok, _ = tap_text(["Settings", "الإعدادات", "Paramètres"])
+        report["settings_found"] = ok
+        if ok:
+            time.sleep(2)
+            screenshot(outdir, "google_one_settings.png", args.screenshots)
+            ok, _ = tap_text(["Check for offers", "البحث عن عروض", "Vérifier les offres"])
+            report["check_for_offers_found"] = ok
+            if ok:
+                time.sleep(3)
+                screenshot(outdir, "google_one_offers.png", args.screenshots)
+                report["outcome"] = "offer_check_screen_opened"
+        return report
+    except Exception as exc:
+        report["outcome"] = "error"
+        report["error"] = repr(exc)[:250]
+        print("Error:", str(exc), file=sys.stderr)
+        return report
+    finally:
+        (outdir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("RESULT:", json.dumps(report, ensure_ascii=False), flush=True)
+
+
+if __name__ == "__main__":
     main()
