@@ -155,6 +155,7 @@ async def _configure_bot_menu(app):
             BotCommand('start','Open main menu'),
             BotCommand('buy','Buy activation codes'),
             BotCommand('login','Start one login with your code'),
+            BotCommand('google_one','Test Google One in the Pixel browser'),
             BotCommand('cancel','Cancel the current operation'),
         ])
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -375,6 +376,7 @@ async def login_totp(update: Update,
     session["totp_secret"] = totp_secret
     session["device"] = create_device_profile()
     session["offer_link"] = None
+    session["google_one_mobile_mode"] = bool(context.user_data.pop("google_one_mobile_mode", False))
 
     context.application.create_task(check_offer(update, context), update=update)
     return ConversationHandler.END
@@ -382,6 +384,7 @@ async def login_totp(update: Update,
 
 async def login_cancel(update,context):
     clear_input(context)
+    context.user_data.pop("google_one_mobile_mode", None)
     remote=REGISTRY.for_chat(update.effective_user.id)
     if remote:
         remote.cancelled = True
@@ -526,6 +529,7 @@ async def check_offer(update: Update,
                 totp_secret=session.get("totp_secret"),
                 progress_callback=report_with_phase,
                 remote_session=remote_session,
+                google_one_mobile_mode=bool(session.get("google_one_mobile_mode")),
             ),
         )
     except GoogleAutomationError as exc:
@@ -569,6 +573,16 @@ async def check_offer(update: Update,
     if offer_link:
         session["offer_link"] = offer_link
     if remote_session and remote_session.ready and remote_session.interactive_enabled:
+        if session.get("google_one_mobile_mode"):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=("📲 Google One mobile website is open in your Pixel browser test.\n"
+                      "This is not the signed Google One Android app; the 6-month offer is not verified."),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔎 Open Google One browser", web_app=WebAppInfo(url=remote_session.url+'?lang='+lang)),
+                ]]),
+            )
+            return
         await context.bot.send_message(chat_id=chat_id, text=i18n.t('ready_title', lang), reply_markup=_menu_keyboard(chat_id))
         miniapp_url = remote_session.url + '?lang=' + lang
         await context.bot.send_message(
@@ -689,7 +703,36 @@ async def status(update: Update,
 
 async def begin_login(update,context):
     clear_input(context)
+    context.user_data.pop("google_one_mobile_mode", None)
     context.user_data['phase']=await login_start(update,context)
+
+
+async def begin_google_one_mobile(update,context):
+    """Start the normal login flow, then inspect mobile Google One instead of checkout."""
+    clear_input(context)
+    context.user_data["google_one_mobile_mode"] = True
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Please use this command in a private chat.")
+        return
+    if REGISTRY.for_chat(update.effective_user.id):
+        await update.message.reply_text("Close the previous browser session first.")
+        return
+    settings = STORE.settings()
+    if settings["maintenance"]:
+        await update.message.reply_text(settings["maintenance_message"])
+        return
+    code = " ".join(context.args or []).strip()
+    if code:
+        context.user_data["phase"] = await accept_key(update, context, code)
+    else:
+        context.user_data["phase"] = AWAIT_KEY
+        await update.message.reply_text(
+            "📲 Google One mobile browser test on the existing Pixel profile.\n"
+            "Enter your access code (T=CODE), then complete the normal Google login.\n"
+            "The bot will open Google One with the SAME Chrome session.\n"
+            "Note: This does not emulate the signed Android Google One app.",
+            reply_markup=_menu_keyboard(update.effective_user.id, True),
+        )
 
 async def admin_entry(update,context):
     import native_admin
@@ -760,6 +803,7 @@ def main() -> None:
     app.add_handler(CommandHandler('menu',start))
     app.add_handler(CommandHandler('cancel',login_cancel))
     app.add_handler(CommandHandler('login',begin_login))
+    app.add_handler(CommandHandler('google_one',begin_google_one_mobile))
     from native_google_one_bot import native_google_one_command
     app.add_handler(CommandHandler('test_google_one', native_google_one_command))
     app.add_handler(CommandHandler('buy',buy_command))
