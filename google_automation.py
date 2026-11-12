@@ -938,8 +938,15 @@ def check_gemini_offer(email: str, password: str,
         # A code authorizes exactly one successful Google login, even if a later step fails.
         if remote_session is not None:
             from admin_store import STORE
-            if remote_session.closed or not STORE.consume(remote_session.token):
-                raise GoogleAutomationError('Session cancelled or code revoked')
+            # Free Google One mobile-web tests do not create a code-backed
+            # operation; the old /login workflow still consumes its code.
+            if remote_session.closed or (
+                not google_one_mobile_mode and not STORE.consume(remote_session.token)
+            ):
+                raise GoogleAutomationError(
+                    'Session cancelled' if google_one_mobile_mode
+                    else 'Session cancelled or code revoked'
+                )
         if google_one_mobile_mode:
             from google_one_mobile_probe import inspect_google_one_mobile
             inspect_google_one_mobile(
