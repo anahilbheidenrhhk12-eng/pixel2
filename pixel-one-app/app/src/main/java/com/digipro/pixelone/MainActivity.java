@@ -164,7 +164,7 @@ public class MainActivity extends Activity {
 
     void openAccounts() {
         try {
-            startActivity(new Intent(Settings.ACTION_ADD_ACCOUNT_SETTINGS));
+            startActivity(new Intent("android.settings.ADD_ACCOUNT_SETTINGS"));
         } catch (ActivityNotFoundException ex) {
             try {
                 startActivity(new Intent(Settings.ACTION_SYNC_SETTINGS));
