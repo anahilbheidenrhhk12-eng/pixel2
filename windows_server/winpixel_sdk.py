@@ -32,12 +32,24 @@ def fetch(url, destination, expected_sha=None, progress=None):
     req = urllib.request.Request(url, headers={"User-Agent": "DigiPixelServer/1.0"})
     h = hashlib.sha256()
     with urllib.request.urlopen(req, timeout=90) as response, destination.open("wb") as out:
+        downloaded = 0
+        next_report = time.monotonic() + 4
+        try:
+            total_size = int(response.headers.get("Content-Length") or 0)
+        except (ValueError, TypeError):
+            total_size = 0
         while True:
             data = response.read(1024 * 1024)
             if not data:
                 break
             h.update(data)
             out.write(data)
+            downloaded += len(data)
+            if progress and time.monotonic() >= next_report:
+                megabytes = downloaded / (1024 * 1024)
+                total = " / %.0f MB" % (total_size / (1024 * 1024)) if total_size else ""
+                progress("Downloading %s: %.0f MB%s" % (destination.name, megabytes, total))
+                next_report = time.monotonic() + 4
     if expected_sha and h.hexdigest().lower() != expected_sha.lower():
         destination.unlink(missing_ok=True)
         raise RuntimeError("Downloaded Android command-line tools checksum did not match official SHA256")
@@ -105,20 +117,37 @@ def find_sdk():
     return home() / "android-sdk"
 
 
-def run(command, env=None, input_data=None, timeout=300):
-    proc = subprocess.run(
-        [str(x) for x in command],
-        input=input_data,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        env=env,
-        timeout=timeout,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if proc.returncode:
-        raise RuntimeError((proc.stderr or proc.stdout or "Command failed")[-1400:])
-    return proc.stdout
+def run(command, env=None, input_data=None, timeout=300, progress=None, label="Android SDK"):
+    # Capture the subprocess output in a temporary file so multi-GB Android
+    # downloads keep showing progress instead of an unresponsive GUI.
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace") as log:
+        process = subprocess.Popen(
+            [str(x) for x in command],
+            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+            stdout=log, stderr=subprocess.STDOUT, text=True, errors="replace",
+            env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if input_data is not None and process.stdin:
+            try:
+                process.stdin.write(input_data)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        started = time.monotonic()
+        while process.poll() is None:
+            elapsed = time.monotonic() - started
+            if elapsed > timeout:
+                process.kill()
+                process.wait()
+                raise RuntimeError(label + " timed out after " + str(timeout) + " seconds")
+            if progress:
+                progress(label + " in progress • " + str(int(elapsed)) + " sec")
+            time.sleep(6)
+        log.seek(0)
+        output = log.read()
+        if process.returncode:
+            raise RuntimeError(label + " failed: " + (output or "Command failed")[-1400:])
+        return output
 
 
 def ensure_cmdline(sdk, progress):
@@ -140,7 +169,8 @@ def ensure_cmdline(sdk, progress):
 
 
 def image_package(sdk, manager, env, progress):
-    available = run([manager, "--sdk_root=" + str(sdk), "--list"], env, timeout=600)
+    available = run([manager, "--sdk_root=" + str(sdk), "--list"], env,
+                    timeout=600, progress=progress, label="Checking Android system images")
     names = [
         "system-images;android-37;google_apis_playstore;x86_64",
         "system-images;android-36;google_apis_playstore;x86_64",
@@ -179,9 +209,11 @@ def ensure_avd(progress):
         Path.home() / ".android" / "avd" / (AVD_NAME + ".ini")).exists():
         progress("Installing Android Emulator + Google Play image (first run)...")
         run([manager, "--sdk_root=" + str(sdk), "--licenses"],
-            env, input_data="y\n" * 150, timeout=300)
+            env, input_data="y\n" * 150, timeout=300, progress=progress,
+            label="Accepting Android SDK licenses")
         run([manager, "--sdk_root=" + str(sdk), "platform-tools", "emulator", package],
-            env, input_data="y\n" * 150, timeout=3600)
+            env, input_data="y\n" * 150, timeout=3600, progress=progress,
+            label="Installing Android Emulator and Google Play system image")
     if not adb.is_file() or not emulator.is_file():
         raise RuntimeError("Emulator or ADB could not be installed")
     avd_ini = Path.home() / ".android" / "avd" / (AVD_NAME + ".ini")
@@ -189,10 +221,12 @@ def ensure_avd(progress):
         progress("Creating persistent Google Play Android device: " + AVD_NAME)
         try:
             run([avdmanager, "create", "avd", "-n", AVD_NAME, "-k", package,
-                 "--device", "pixel_9_pro_xl", "--force"], env, input_data="no\n", timeout=300)
+                 "--device", "pixel_9_pro_xl", "--force"], env, input_data="no\n", timeout=300,
+                progress=progress, label="Creating Android Pixel emulator")
         except Exception:
             run([avdmanager, "create", "avd", "-n", AVD_NAME, "-k", package,
-                 "--device", "pixel", "--force"], env, input_data="no\n", timeout=300)
+                 "--device", "pixel", "--force"], env, input_data="no\n", timeout=300,
+                progress=progress, label="Creating Android emulator")
         ini = Path.home() / ".android" / "avd" / (AVD_NAME + ".avd") / "config.ini"
         if ini.is_file():
             with ini.open("a", encoding="utf-8") as output:
