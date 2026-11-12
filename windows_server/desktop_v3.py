@@ -78,7 +78,6 @@ class DesktopServer(PixelServer):
             self.root.after(350, lambda: self.schedule('start', None))
 
     def label(self, parent, text, size=14, color=TEXT, bold=False, **kwargs):
-        # Pixel-sized fonts avoid multiplying fixed layouts under Windows DPI scaling.
         return tk.Label(parent, text=text, font=('Segoe UI', -size, 'bold' if bold else 'normal'),
                         bg=parent.cget('bg'), fg=color, anchor='w', justify='left', **kwargs)
 
@@ -350,46 +349,54 @@ class DesktopServer(PixelServer):
             self.root.destroy()
 
 
+_MUTEX = None
+
 def single_instance():
+    global _MUTEX
     if os.name != 'nt':
         return True
     kernel = ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
     kernel.CreateMutexW.restype = ctypes.c_void_p
-    kernel.CreateMutexW(None,False,'Local\\DigiPixelServerDesktopV3')
+    _MUTEX = kernel.CreateMutexW(None,False,'Local\\DigiPixelServerDesktopV3')
+    if not _MUTEX:
+        raise ctypes.WinError(ctypes.get_last_error())
     return ctypes.get_last_error() != 183
 
 
 def ui_smoke(output=None):
     app = DesktopServer(testing=True)
-    app.root.update()
-    app.busy = True
-    app.publish({'type':'progress','phase':'install','message':'Installing Google Play system image',
-                 'percent':42,'detail':'42% Unzipping system.img - actual SDK output'})
-    app.refresh()
-    app.root.update()
-    assert app.log.winfo_height() >= 65, 'Activity log is too small'
-    assert app.controls['one'].cget('state') == 'disabled', 'App actions must be disabled during setup'
-    assert app.status_label.cget('text') == 'Installing Google Play system image'
-    assert app.log.cget('state') == 'disabled', 'Activity log should be read-only'
-    assert app.progressbar.cget('mode') == 'determinate'
-    for w,h in [(960,680),(820,600)]:
-        app.root.geometry(f'{w}x{h}')
+    try:
         app.root.update()
-        for widget in (app.stop_button, app.log, app.footer_label):
-            bottom = widget.winfo_rooty()+widget.winfo_height()
-            assert bottom <= app.root.winfo_rooty()+app.root.winfo_height()+2, 'A control is clipped'
-    app.root.geometry('1000x720')
-    app.root.update()
-    if output:
-        try:
-            from PIL import ImageGrab
-            x,y = app.root.winfo_rootx(),app.root.winfo_rooty()
-            ImageGrab.grab((x,y,x+app.root.winfo_width(),y+app.root.winfo_height())).save(output)
-        except Exception as exc:
-            print('Screenshot unavailable:',type(exc).__name__)
-    app.busy = False
-    app.close()
-    print('GUI_SMOKE_OK: responsive layout, busy controls, reported progress, readable logs')
+        app.busy = True
+        app.publish({'type':'progress','phase':'install','message':'Installing Google Play system image',
+                     'percent':42,'detail':'UI TEST DATA: 42% Unzipping system.img (not a live download)'})
+        app.refresh()
+        app.root.update()
+        assert app.log.winfo_height() >= 65, 'Activity log is too small'
+        assert str(app.controls['one'].cget('state')) == 'disabled', 'App actions must be disabled during setup'
+        assert app.status_label.cget('text') == 'Installing Google Play system image'
+        assert str(app.log.cget('state')) == 'disabled', 'Activity log should be read-only'
+        assert str(app.progressbar.cget('mode')) == 'determinate'
+        for w,h in [(960,680),(820,600)]:
+            app.root.geometry(f'{w}x{h}')
+            app.root.update()
+            for widget in (app.stop_button, app.log, app.footer_label):
+                bottom = widget.winfo_rooty()+widget.winfo_height()
+                assert bottom <= app.root.winfo_rooty()+app.root.winfo_height()+2, 'A control is clipped'
+        app.root.geometry('1000x720')
+        app.root.update()
+        print('GUI_SMOKE_OK: responsive layout, busy controls, reported progress, readable logs')
+    finally:
+        if output:
+            try:
+                from PIL import ImageGrab
+                x,y = app.root.winfo_rootx(),app.root.winfo_rooty()
+                ImageGrab.grab((x,y,x+app.root.winfo_width(),y+app.root.winfo_height())).save(output)
+            except Exception as exc:
+                print('Screenshot unavailable:',type(exc).__name__)
+        app.busy = False
+        app.close()
 
 
 if __name__ == '__main__':
