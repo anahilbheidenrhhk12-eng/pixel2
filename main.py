@@ -322,7 +322,10 @@ async def login_email(update: Update,
         await update.message.reply_text(i18n.t('invalid_email', lang))
         return AWAIT_EMAIL
     context.user_data['pending_email'] = email
-    await update.message.reply_text(i18n.t('step3_password', lang),reply_markup=_menu_keyboard(update.effective_user.id,True))
+    password_prompt = ("🔒 Enter the password for your Google account."
+                       if context.user_data.get("google_one_mobile_mode")
+                       else i18n.t('step3_password', lang))
+    await update.message.reply_text(password_prompt,reply_markup=_menu_keyboard(update.effective_user.id,True))
     return AWAIT_PASSWORD
 
 
@@ -334,7 +337,10 @@ async def login_password(update: Update,
         await update.message.delete()
     except Exception:
         pass
-    await update.effective_chat.send_message(i18n.t('step4_totp', lang),reply_markup=_menu_keyboard(update.effective_user.id,True))
+    totp_prompt = ("🔐 Enter your account's 2FA setup secret to continue."
+                   if context.user_data.get("google_one_mobile_mode")
+                   else i18n.t('step4_totp', lang))
+    await update.effective_chat.send_message(totp_prompt,reply_markup=_menu_keyboard(update.effective_user.id,True))
     return AWAIT_TOTP
 
 
@@ -410,18 +416,24 @@ async def check_offer(update: Update,
     if settings['maintenance']:
         await update.message.reply_text(settings['maintenance_message'])
         return
-    try:
-        STORE.claim(session.get('access_key', ''), chat_id)
-    except ValueError:
-        await update.message.reply_text('🔑 Use /login T=CODE with a generated code first.')
-        return
+    # /google_one is a free mobile-web experiment, while /login keeps
+    # the existing purchase/access-code policy unchanged.
+    code_free_google_one = bool(session.get("google_one_mobile_mode"))
+    if not code_free_google_one:
+        try:
+            STORE.claim(session.get('access_key', ''), chat_id)
+        except ValueError:
+            await update.message.reply_text('🔑 Use /login T=CODE with a generated code first.')
+            return
     if not checkout_enabled():
         await update.message.reply_text('The Mini App is not configured. Contact the administrator.')
         return
 
     if not session.get("email") or not session.get("password"):
         await update.message.reply_text(
-            "⚠️ No credentials found. Please use /login first."
+            ("⚠️ No Google login details yet. Use /google_one first."
+             if code_free_google_one else
+             "⚠️ No credentials found. Please use /login first.")
         )
         return
 
@@ -435,7 +447,8 @@ async def check_offer(update: Update,
     if checkout_enabled():
         try:
             remote_session = REGISTRY.create(chat_id)
-            STORE.begin(session['access_key'], chat_id, remote_session.token, session.get('email',''))
+            if not code_free_google_one:
+                STORE.begin(session['access_key'], chat_id, remote_session.token, session.get('email',''))
         except (RuntimeError, ValueError) as exc:
             if remote_session:
                 await asyncio.to_thread(REGISTRY.discard, remote_session)
@@ -708,7 +721,7 @@ async def begin_login(update,context):
 
 
 async def begin_google_one_mobile(update,context):
-    """Start the normal login flow, then inspect mobile Google One instead of checkout."""
+    """Start the Google One mobile-web test without an activation/access code."""
     clear_input(context)
     context.user_data["google_one_mobile_mode"] = True
     if update.effective_chat.type != "private":
@@ -721,18 +734,16 @@ async def begin_google_one_mobile(update,context):
     if settings["maintenance"]:
         await update.message.reply_text(settings["maintenance_message"])
         return
-    code = " ".join(context.args or []).strip()
-    if code:
-        context.user_data["phase"] = await accept_key(update, context, code)
-    else:
-        context.user_data["phase"] = AWAIT_KEY
-        await update.message.reply_text(
-            "📲 Google One mobile browser test on the existing Pixel profile.\n"
-            "Enter your access code (T=CODE), then complete the normal Google login.\n"
-            "The bot will open Google One with the SAME Chrome session.\n"
-            "Note: This does not emulate the signed Android Google One app.",
-            reply_markup=_menu_keyboard(update.effective_user.id, True),
-        )
+    # No code claim, code generation, or purchase required for this experiment.
+    # Retain the normal Google email/password/2FA flow, with the same Chrome
+    # session opening the Google One mobile website on successful login.
+    context.user_data["phase"] = AWAIT_EMAIL
+    await update.message.reply_text(
+        "📲 Google One mobile-web test — no activation code required.\n"
+        "📧 Enter your Google email address:",
+        reply_markup=_menu_keyboard(update.effective_user.id, True),
+    )
+
 
 async def admin_entry(update,context):
     import native_admin
