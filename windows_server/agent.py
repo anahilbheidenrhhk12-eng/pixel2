@@ -224,6 +224,11 @@ class PixelServer:
         match = re.search(r"versionName=(\d+)\.", chrome_package)
         major = match.group(1) if match else str(pixel_config.CHROME_MAJOR_VERSION)
         driver_file = self.chromedriver(major)
+        # Start Android Chrome in this AVD before attaching ChromeDriver.
+        # The browser runs on the emulated Android device, not Windows.
+        self.adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
+                 "-d", GOOGLE_URL, "-p", "com.android.chrome")
+        time.sleep(2)
         opts = webdriver.ChromeOptions()
         opts.add_experimental_option("androidPackage", "com.android.chrome")
         opts.add_experimental_option("androidDeviceSerial", self.serial)
