@@ -29,6 +29,12 @@ def boot():
     data,_=phonebox_request("")
     obj=json.loads(data)
     report("Phonebox connected; phone status="+str(obj.get("status","unknown"))+"; phone="+PHONEBOX_ID)
+    if obj.get("status")=="ready":
+     try:
+      info,_=phonebox_request("/device")
+      d=json.loads(info)
+      print("[ANDROID-TEST] Phonebox device: "+json.dumps(d),flush=True)
+     except Exception as err:print("[ANDROID-TEST] Device inspection failed: "+str(err),flush=True)
    except urllib.error.HTTPError as e:
     if e.code==404:
      try:
@@ -78,6 +84,12 @@ class H(BaseHTTPRequestHandler):
   if self.path.split("?",1)[0]=="/health":
    self.send_response(200);self.end_headers();self.wfile.write(STATE["status"].encode());return
   if not self.auth():return
+  if self.path.split("?",1)[0]=="/device" and PHONEBOX_KEY and PHONEBOX_ID:
+   try:
+    data,mime=phonebox_request("/device")
+    self.send_response(200);self.send_header("Content-Type","application/json");self.send_header("Cache-Control","no-store");self.end_headers();self.wfile.write(data)
+   except Exception as e:self.send_error(503,str(e))
+   return
   if self.path.split("?",1)[0]=="/screen":
    if PHONEBOX_KEY and PHONEBOX_ID:
     try:
