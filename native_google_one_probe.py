@@ -49,7 +49,8 @@ def android_google_account_present():
     code, out, _ = adb("shell", "dumpsys", "account")
     if code:
         return None
-    return bool(re.search(r"\btype=com\.google\b", out))
+    entries = re.findall(r"Account\s*\{[^{}\n]{1,400}\}", out)
+    return any(re.search(r"\btype=com\.google\b", entry) for entry in entries)
 
 
 def screenshot(outdir, filename, enabled):
