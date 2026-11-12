@@ -1,0 +1,27 @@
+name: Google One Mobile Bot CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "google_one_mobile_probe.py"
+      - "google_automation.py"
+      - "main.py"
+      - "remote_checkout.py"
+      - "tests/test_google_one_mobile_probe.py"
+      - ".github/workflows/google-one-mobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Telegram bot files
+        run: python3 -m py_compile main.py google_automation.py google_one_mobile_probe.py remote_checkout.py
+      - name: Run Google One mobile tests
+        run: python3 -m unittest discover -s tests -p "test_google_one_mobile_probe.py" -v
