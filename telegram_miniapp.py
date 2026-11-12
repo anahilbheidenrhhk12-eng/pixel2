@@ -118,7 +118,7 @@ async def miniapp_auth(request):
     if session is None:
         raise web.HTTPNotFound(text='No active browser. Start Check Offer in this bot chat.')
     if not session.ready or not session.interactive_enabled:
-        raise web.HTTPForbidden(text='Complete the activation code and bot steps first; the browser opens only at the final stage.')
+        raise web.HTTPForbidden(text='Complete the sign-in steps first; the browser opens when it is ready.')
     session.auth_cookie = secrets.token_urlsafe(32)
     response = web.json_response({'token': session.token, **_state(session)})
     _secure_headers(response)
@@ -140,7 +140,7 @@ async def miniapp_connected(request):
     if not session.in_use or not session.ready:
         raise web.HTTPConflict(text='Connect the browser viewer first')
     session.viewer_connected = True
-    if session.interactive_enabled:
+    if session.interactive_enabled and not getattr(session, "google_one_mobile_probe", False):
         from admin_store import STORE
         if not STORE.consume(session.token):
             raise web.HTTPForbidden(text='Access code revoked')
