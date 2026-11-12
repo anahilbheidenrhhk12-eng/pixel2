@@ -91,7 +91,7 @@ async def native_google_one_command(update, context):
     if not update.effective_chat or update.effective_chat.type != "private":
         await update.effective_message.reply_text("استعمل هذا الأمر في الخاص.")
         return
-    mode = (context.args or ["run"])[0].lower()
+    mode = (context.args or ["status"])[0].lower()
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("فتح اختبارات GitHub", url=WORKFLOW_URL)]
     ])
