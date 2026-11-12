@@ -20,6 +20,66 @@ def phonebox_api(path, method="GET", payload=None, timeout=90):
   result=response.read()
  return json.loads(result) if result else {}
 
+GOOGLE_ONE_APP="com.google.android.apps.subscriptions.red"
+def google_one_is_installed():
+ result=phonebox_api("/apps")
+ installed=result.get("data",result.get("apps",[]))
+ return any(isinstance(app,dict) and app.get("package")==GOOGLE_ONE_APP for app in installed)
+def native_google_one_test():
+ """Open the actual Google One Android app, never browser-only; park when done."""
+ try:
+  status=phonebox_api("").get("status","unknown")
+  report("Native Google One test: phone state="+status)
+  if status in ("parked","unavailable"):
+   status=phonebox_api("/start","POST",{"idle_timeout":60,"max_duration":180,"wait":True},timeout=75).get("status","unknown")
+  for i in range(4):
+   if status=="ready":break
+   if status not in ("creating","starting"):report("Native test interrupted: "+status);return
+   status=phonebox_api("?wait=ready&timeout=35",timeout=50).get("status","unknown")
+  if status!="ready":report("Native test unable to start: "+status);return
+  specs=phonebox_api("/device")
+  report("Native Android phone model="+str(specs.get("model","unknown"))+"; Android="+str(specs.get("android_version",specs.get("android","unknown"))))
+  present=google_one_is_installed()
+  report("Google One Android package installed="+str(present))
+  if not present:
+   try:
+    resp=phonebox_api("/apps","POST",{"package":GOOGLE_ONE_APP},timeout=40)
+    report("Google One installation requested, state="+str(resp.get("status","unknown")))
+   except urllib.error.HTTPError as e:
+    reason=e.read(1500).decode("utf-8","replace")
+    report("Google One app install unavailable HTTP "+str(e.code)+"; "+reason[:250])
+   for i in range(8):
+    if google_one_is_installed():present=True;break
+    time.sleep(5)
+  if not present:
+   report("Google One native app NOT installed. Opening its Google Play listing instead.")
+   page=phonebox_api("/actions","POST",{"actions":[{"type":"open_url","url":"market://details?id="+GOOGLE_ONE_APP,"package":"com.android.vending"}],"observe":"ui"},timeout=95)
+   result=(page.get("results") or [{}])[0]
+   report("Play Store listing opened="+str(result.get("ok",False))+"; foreground="+str((page.get("observation",{}).get("app") or {}).get("package","unknown")))
+   return
+  action=phonebox_api("/actions","POST",{"actions":[{"type":"open_app","package":GOOGLE_ONE_APP},{"type":"wait","ms":2500}],"observe":"ui"},timeout=95)
+  results=action.get("results") or []
+  failed=[x.get("error",{}).get("code") for x in results if not x.get("ok")]
+  observation=action.get("observation") or {}
+  app=(observation.get("app") or {}).get("package","unknown")
+  elem=observation.get("elements",[])
+  if failed:
+   report("Google One native app launch FAILED: "+str(failed)+"; foreground="+str(app))
+  else:
+   prompt=any("sign in" in str(x.get("text","")).lower() or "add account" in str(x.get("text","")).lower() for x in elem if isinstance(x,dict))
+   report("Google One native app opened. foreground="+str(app)+"; elements="+str(len(elem))+"; sign_in_prompt="+str(prompt))
+ except urllib.error.HTTPError as e:
+  report("Native Google One test HTTP "+str(e.code)+"; "+e.read(900).decode("utf-8","replace")[:300])
+ except Exception as e:report("Native Google One test error: "+repr(e))
+ finally:
+  try:
+   phonebox_api("/park","POST",{"wait":False},timeout=40)
+   print("[ANDROID-TEST] Native test finished; phone park requested",flush=True)
+   STATE["status"]+="; park requested"
+  except Exception as e:
+   print("[ANDROID-TEST] Native test park ERROR: "+repr(e),flush=True)
+   STATE["status"]+="; park failed"
+
 def phonebox_smoke_test():
  """One short paid test of Chrome Google One + Gmail login, then park."""
  phone_status="unknown"
@@ -87,6 +147,9 @@ def boot():
  try:
   if PHONEBOX_KEY:
    if not PHONEBOX_ID:report("PHONEBOX_PHONE_ID is missing");return
+   if os.environ.get("PHONEBOX_NATIVE_TEST","0")=="1":
+    native_google_one_test()
+    return
    if os.environ.get("PHONEBOX_SMOKE_TEST","0")=="1":
     phonebox_smoke_test()
     return
