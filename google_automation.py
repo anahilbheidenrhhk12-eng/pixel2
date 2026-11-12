@@ -884,7 +884,8 @@ def check_gemini_offer(email: str, password: str,
                        totp_secret: Optional[str] = None,
                        progress_callback: ProgressCB = None,
                        manual_login: bool = False,
-                       remote_session=None) -> Optional[str]:
+                       remote_session=None,
+                       google_one_mobile_mode: bool = False) -> Optional[str]:
     """
     Main entry point.
 
@@ -939,6 +940,20 @@ def check_gemini_offer(email: str, password: str,
             from admin_store import STORE
             if remote_session.closed or not STORE.consume(remote_session.token):
                 raise GoogleAutomationError('Session cancelled or code revoked')
+        if google_one_mobile_mode:
+            from google_one_mobile_probe import inspect_google_one_mobile
+            inspect_google_one_mobile(
+                driver,
+                progress=lambda message: _report(progress_callback, message, driver),
+            )
+            if remote_session is not None and not remote_session.closed:
+                remote_session.google_one_mobile_probe = True
+                remote_session.attach_driver(driver)
+                remote_session.interactive_enabled = True
+                remote_session.phase = 'Google One mobile website - Pixel browser'
+                keep_browser = True
+            return None
+
         in_stage_six = True
         offer_link, pro_clicked = _navigate_google_one(
             driver, cb=progress_callback, interactive=remote_session is not None,
