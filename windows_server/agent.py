@@ -267,7 +267,8 @@ class PixelServer:
     def execute(self, action):
         if action == "start":
             self.ensure()
-            return "✅ Persistent Android Emulator ready: " + AVD_NAME + "\n" + self.serial
+            first_screen = self.open_one()
+            return "✅ Persistent Android Emulator ready: " + AVD_NAME + "\n" + self.serial + "\n" + first_screen
         if action == "account":
             return self.open_account()
         if action == "one":
