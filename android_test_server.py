@@ -29,6 +29,15 @@ def boot():
     data,_=phonebox_request("")
     obj=json.loads(data)
     report("Phonebox connected; phone status="+str(obj.get("status","unknown"))+"; phone="+PHONEBOX_ID)
+   except urllib.error.HTTPError as e:
+    if e.code==404:
+     try:
+      req=urllib.request.Request("https://phonebox.dev/v1/phones",headers={"Authorization":"Bearer "+PHONEBOX_KEY})
+      with urllib.request.urlopen(req,timeout=25) as response: phones=json.load(response).get("data",[])
+      report("Configured Phonebox ID not found. Available phones: "+", ".join(str(x.get("id"))+" ("+str(x.get("status"))+")" for x in phones[:10]))
+     except Exception as err:report("Phonebox phone-list lookup failed: "+str(err))
+    else:report("Phonebox HTTP error: "+str(e.code))
+    return
    except Exception as e:report("Phonebox connection failed: "+str(e));return
    return
   if REMOTE_ADB:
