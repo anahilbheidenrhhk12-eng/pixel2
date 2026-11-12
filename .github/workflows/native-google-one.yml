@@ -1,0 +1,57 @@
+name: Google One native Android 17 test
+
+on:
+  push:
+    branches: [android-test]
+    paths:
+      - "native_google_one_probe.py"
+      - "tests/test_native_google_one_probe.py"
+      - ".github/workflows/native-google-one.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-one-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-native-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout android-test branch
+        uses: actions/checkout@v4
+
+      - name: Test Android account handoff logic (offline, no secrets)
+        run: python3 -m unittest discover -s tests -p "test_native_google_one_probe.py" -v
+
+      - name: Enable KVM for hardware accelerated Android emulator
+        run: |
+          test -c /dev/kvm || (echo "Runner has no KVM" && exit 1)
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start Android 17 Google Play emulator and probe account + native app
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: '37.1'
+          target: google_apis_playstore_ps16k
+          arch: x86_64
+          profile: pixel_7_pro
+          cores: 2
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: python3 native_google_one_probe.py
+
+      - name: Upload device report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-one-native-report
+          path: native_test_results/
+          if-no-files-found: warn
+          retention-days: 2
