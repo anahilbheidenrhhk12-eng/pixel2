@@ -141,6 +141,8 @@ async def error_handler(update,context):
 
 async def _configure_bot_menu(app):
     """Enable the Telegram menu and the private HTTPS browser viewer."""
+    import winpixel_bridge
+    winpixel_bridge.set_bot(app.bot)
     try:
         app.bot_data['remote_runner'] = await start_http()
         STORE.recover()
@@ -156,6 +158,7 @@ async def _configure_bot_menu(app):
             BotCommand('buy','Buy activation codes'),
             BotCommand('login','Start one login with your code'),
             BotCommand('google_one','Test Google One in the Pixel browser'),
+            BotCommand('winpixel','Control Windows Android emulator'),
             BotCommand('cancel','Cancel the current operation'),
         ])
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -815,6 +818,9 @@ def main() -> None:
     app.add_handler(CommandHandler('cancel',login_cancel))
     app.add_handler(CommandHandler('login',begin_login))
     app.add_handler(CommandHandler('google_one',begin_google_one_mobile))
+    from winpixel_bridge import command as winpixel_command, callback as winpixel_callback
+    app.add_handler(CommandHandler('winpixel', winpixel_command))
+    app.add_handler(CallbackQueryHandler(winpixel_callback, pattern=r'^wp:'))
     from native_google_one_bot import native_google_one_command
     app.add_handler(CommandHandler('test_google_one', native_google_one_command))
     app.add_handler(CommandHandler('buy',buy_command))
