@@ -31,7 +31,7 @@ jobs:
       - name: Install packaging and UI test dependencies
         shell: pwsh
         run: python -m pip install --disable-pip-version-check pyinstaller==6.16.0 selenium==4.21.0 pyotp==2.10.0 webdriver-manager==4.0.1 Pillow==11.3.0
-      - name: Test progress, downloads, caching and process cancellation
+      - name: Test runtime and verified native Google One lifecycle
         shell: pwsh
         run: python -m unittest discover -s windows_server/tests -v
       - name: Test actual Windows GUI layout and disabled controls
@@ -39,23 +39,23 @@ jobs:
         run: |
           $env:PYTHONPATH = "$pwd;$pwd/windows_server"
           New-Item -ItemType Directory -Force -Path qa | Out-Null
-          python windows_server/desktop_v3.py --ui-smoke --screenshot qa/desktop-v3-windows.png
+          python windows_server/desktop_v31.py --ui-smoke --screenshot qa/desktop-v31-windows.png
           if ($LASTEXITCODE -ne 0) { throw 'Desktop UI smoke test failed' }
-      - name: Compile standalone Windows v3 server
+      - name: Compile standalone Windows 3.1 server
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name DigiPixelServer --paths . --paths windows_server --hidden-import native_google_one_probe --hidden-import device_simulator --hidden-import config --hidden-import selenium windows_server/desktop_v3.py
-      - name: Test the packaged EXE without starting an emulator
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name DigiPixelServer --paths . --paths windows_server --hidden-import native_google_one_probe --hidden-import device_simulator --hidden-import config --hidden-import selenium windows_server/desktop_v31.py
+      - name: Test packaged EXE without launching an emulator
         shell: pwsh
         run: |
           if (!(Test-Path dist/DigiPixelServer.exe)) { throw 'Missing DigiPixelServer.exe' }
-          $p = Start-Process -FilePath dist/DigiPixelServer.exe -ArgumentList '--ui-smoke --screenshot qa/desktop-v3-exe.png' -PassThru
+          $p = Start-Process -FilePath dist/DigiPixelServer.exe -ArgumentList '--ui-smoke --screenshot qa/desktop-v31-exe.png' -PassThru
           if (!$p.WaitForExit(45000)) { $p.Kill(); throw 'Packaged GUI test timed out' }
           if ($p.ExitCode -ne 0) { throw 'Packaged GUI test failed' }
           Get-FileHash dist/DigiPixelServer.exe -Algorithm SHA256 | Format-List
       - name: Upload desktop build
         uses: actions/upload-artifact@v4
         with:
-          name: DigiPixelServer-Desktop-v3
+          name: DigiPixelServer-Desktop-v31
           path: |
             dist/DigiPixelServer.exe
             windows_server/START_PIXEL_SERVER.bat
@@ -65,7 +65,39 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: DigiPixelServer-Desktop-v3-QA
+          name: DigiPixelServer-Desktop-v31-QA
           path: qa/
           if-no-files-found: ignore
           retention-days: 7
+
+  native-android-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable hardware accelerated Android
+        run: |
+          test -c /dev/kvm
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Boot Android 17 and verify native application states
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: '37.1'
+          target: google_apis_playstore_ps16k
+          arch: x86_64
+          profile: pixel_7_pro
+          ram-size: 4096M
+          emulator-boot-timeout: 360
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: python3 windows_server/ci_native_check.py
+      - name: Upload real Android integration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DigiPixelServer-v31-Android-Integration
+          path: qa/native/
+          if-no-files-found: warn
+          retention-days: 14
