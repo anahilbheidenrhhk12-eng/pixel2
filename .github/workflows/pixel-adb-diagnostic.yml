@@ -1,0 +1,26 @@
+name: Validate Windows Pixel ADB Diagnostic
+
+on:
+  push:
+    branches: [android-test]
+    paths:
+      - 'support/Repair-PixelConnection.ps1'
+      - 'support/Test-PixelConnection.ps1'
+      - '.github/workflows/pixel-adb-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell:
+    runs-on: windows-2022
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate on Windows PowerShell 5.1 with simulated ADB states
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSVersionTable.PSVersion
+          & .\support\Test-PixelConnection.ps1
