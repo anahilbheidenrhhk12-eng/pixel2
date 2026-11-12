@@ -5,6 +5,7 @@ on:
     branches: [android-test]
     paths:
       - "native_google_one_probe.py"
+      - "tests/test_native_google_one_probe.py"
       - ".github/workflows/native-google-one.yml"
   workflow_dispatch:
 
@@ -23,6 +24,9 @@ jobs:
       - name: Checkout android-test branch
         uses: actions/checkout@v4
 
+      - name: Test Android account handoff logic (offline, no secrets)
+        run: python3 -m unittest discover -s tests -p "test_native_google_one_probe.py" -v
+
       - name: Enable KVM for hardware accelerated Android emulator
         run: |
           test -c /dev/kvm || (echo "Runner has no KVM" && exit 1)
@@ -30,7 +34,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Start Android 17 Google Play emulator and test native app
+      - name: Start Android 17 Google Play emulator and probe account + native app
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: '37.1'
