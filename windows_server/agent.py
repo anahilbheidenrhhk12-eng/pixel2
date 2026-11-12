@@ -13,6 +13,7 @@ import secrets
 import subprocess
 import threading
 import time
+import traceback
 import tkinter as tk
 import urllib.request
 import zipfile
@@ -41,11 +42,15 @@ class PixelServer:
         self.driver = None
         self.ready = False
         self.busy = False
+        self.current_action = ""
+        self.relay_ok = False
         self.shutdown = threading.Event()
         self.work = queue.Queue()
         self.notifications = queue.Queue()
         self.pairing = "".join(str(secrets.randbelow(10)) for _ in range(8))
         self.status = "Windows server started"
+        self.log_path = home() / "logs" / "server.log"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.config = {}
         if CONNECTION.is_file():
             try:
@@ -82,7 +87,7 @@ class PixelServer:
         self.line(root, "Official Google One app inside a persistent Android Emulator.", 11, "#a5b4ca")
         self.status_label = self.line(root, "Starting…", 12, "#fbbf24", True, 9)
         if self.config:
-            self.line(root, "Railway bridge: connected after pairing", 11, "#93c5fd")
+            self.relay_label = self.line(root, "Railway bridge: checking connection...", 11, "#93c5fd")
             self.line(root, "ONE-TIME TELEGRAM PAIRING NUMBER:", 11, "#a5b4ca", True, 7)
             self.line(root, self.pairing, 23, "#2ae6b8", True)
             self.line(root, "Send  /winpixel pair " + self.pairing + "  to your Telegram bot.", 10, "#a5b4ca")
@@ -112,10 +117,39 @@ class PixelServer:
                                             relief="flat", font=("Consolas", 9))
         self.log.pack(fill="both", expand=True)
         self.log.insert("end", "Server ready. Initial emulator setup downloads official Android components.\n")
+        help_bar = tk.Frame(root, bg="#0a1423")
+        help_bar.pack(fill="x", pady=(8, 0))
+        tk.Button(help_bar, text="OPEN ERROR LOG", command=self.open_log,
+                  bg="#182d46", fg="#ffffff", relief="flat", pady=5
+                  ).pack(side="left", fill="x", expand=True, padx=4)
+        tk.Button(help_bar, text="COPY LOG", command=self.copy_log,
+                  bg="#182d46", fg="#ffffff", relief="flat", pady=5
+                  ).pack(side="left", fill="x", expand=True, padx=4)
 
     def set_status(self, message):
         self.status = message[:240]
-        self.notifications.put(message[:500])
+        self.log_event(message)
+
+    def log_event(self, message):
+        message = str(message)[:650]
+        self.notifications.put(message)
+        try:
+            with self.log_path.open("a", encoding="utf-8") as output:
+                output.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + message + "\n")
+        except OSError:
+            pass
+
+    def open_log(self):
+        self.log_path.touch(exist_ok=True)
+        try:
+            os.startfile(str(self.log_path))
+        except OSError as exc:
+            messagebox.showerror("Log unavailable", str(exc))
+
+    def copy_log(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.log.get("1.0", "end-1c"))
+        self.root.update()
 
     def refresh(self):
         while True:
@@ -126,6 +160,12 @@ class PixelServer:
             self.status_label.configure(text=msg[:75], fg="#2ae6b8" if "ready" in msg.lower() else "#fbbf24")
             self.log.insert("end", time.strftime("%H:%M:%S") + "  " + msg + "\n")
             self.log.see("end")
+        if self.config:
+            self.relay_label.configure(
+                text=("Railway bridge: CONNECTED (waiting for Telegram pairing)"
+                      if self.relay_ok else "Railway bridge: reconnecting..."),
+                fg=("#2ae6b8" if self.relay_ok else "#fbbf24"),
+            )
         if not self.shutdown.is_set():
             self.root.after(250, self.refresh)
 
@@ -134,7 +174,11 @@ class PixelServer:
             return
         self.work.put((action, job_id))
         if not remote:
-            self.set_status("Queued " + action + " on Windows")
+            if self.busy:
+                self.log_event("Queued " + action + " behind " + self.current_action +
+                               ". Android setup stays active.")
+            else:
+                self.log_event("Queued " + action + " on Windows")
 
     def adb(self, *args, binary=False):
         if not self.sdk or not self.serial:
@@ -294,6 +338,7 @@ class PixelServer:
             except queue.Empty:
                 continue
             self.busy = True
+            self.current_action = action
             self.set_status("Processing " + action)
             screenshot = None
             try:
@@ -304,8 +349,10 @@ class PixelServer:
             except Exception as exc:
                 message = "❌ Windows Android: " + str(exc)[:700]
                 self.set_status("Error • " + str(exc)[:140])
+                self.log_event("Error details: " + traceback.format_exc()[-2500:])
             finally:
                 self.busy = False
+                self.current_action = ""
             if job_id:
                 self.post_result(job_id, message, screenshot)
             self.work.task_done()
@@ -332,12 +379,17 @@ class PixelServer:
                     "pair_code": self.pairing,
                     "status": ("Busy • " if self.busy else "Idle • ") + self.status[:140],
                 })
+                if not self.relay_ok:
+                    self.log_event("Railway HTTPS connection established.")
+                self.relay_ok = True
                 action = result.get("action", "")
                 job = result.get("job_id", "")
                 if action in ACTIONS and job:
                     self.schedule(action, job, remote=True)
             except Exception as exc:
-                self.set_status("Railway reconnect: " + str(exc)[:90])
+                if self.relay_ok:
+                    self.log_event("Railway reconnect: " + str(exc)[:90])
+                self.relay_ok = False
             self.shutdown.wait(4)
 
     def post_result(self, job_id, message, screenshot):
