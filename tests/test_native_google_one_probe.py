@@ -28,6 +28,14 @@ class NativeGoogleOneTest(unittest.TestCase):
             patch.object(native.time, 'sleep', return_value=None),
         )
 
+    def test_authenticator_registration_is_not_a_signed_in_account(self):
+        with patch.object(native, "adb", return_value=(0, "Registered authenticator: type=com.google", "")):
+            self.assertFalse(native.android_google_account_present())
+
+    def test_actual_android_google_account_is_detected(self):
+        with patch.object(native, "adb", return_value=(0, "Accounts: [Account {name=private@example.com, type=com.google}]", "")):
+            self.assertTrue(native.android_google_account_present())
+
     def test_not_logged_in_reports_required(self):
         with tempfile.TemporaryDirectory() as folder:
             p = self.common(has_account=False)
