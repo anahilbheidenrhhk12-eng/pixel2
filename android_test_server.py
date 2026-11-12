@@ -8,6 +8,68 @@ def phonebox_request(path):
  req=urllib.request.Request("https://phonebox.dev/v1/phones/"+PHONEBOX_ID+path,headers={"Authorization":"Bearer "+PHONEBOX_KEY})
  with urllib.request.urlopen(req,timeout=25) as response:
   return response.read(),response.headers.get("Content-Type","application/octet-stream")
+def phonebox_api(path, method="GET", payload=None, timeout=90):
+ url="https://phonebox.dev/v1/phones/"+PHONEBOX_ID+path
+ headers={"Authorization":"Bearer "+PHONEBOX_KEY}
+ body=None
+ if payload is not None:
+  headers["Content-Type"]="application/json"
+  body=json.dumps(payload).encode("utf-8")
+ req=urllib.request.Request(url,headers=headers,data=body,method=method)
+ with urllib.request.urlopen(req,timeout=timeout) as response:
+  result=response.read()
+ return json.loads(result) if result else {}
+
+def phonebox_smoke_test():
+ """One short paid test of Chrome Google One + Gmail login, then park."""
+ phone_status="unknown"
+ succeeded=[]
+ try:
+  phone=phonebox_api("")
+  phone_status=phone.get("status","unknown")
+  report("Phonebox smoke test started; current phone status="+phone_status)
+  if phone_status in ("parked","unavailable"):
+   report("Resuming Phonebox for a capped test session (max 180 seconds)")
+   phone=phonebox_api("/start","POST",{"idle_timeout":60,"max_duration":180,"wait":True},timeout=90)
+   phone_status=phone.get("status","unknown")
+  for attempt in range(5):
+   if phone_status=="ready":break
+   if phone_status not in ("starting","creating"):
+    report("Phonebox not ready: "+phone_status);return
+   phone=phonebox_api("?wait=ready&timeout=20",timeout=35)
+   phone_status=phone.get("status","unknown")
+  if phone_status!="ready":
+   report("Phonebox did not become ready; state="+phone_status);return
+  device=phonebox_api("/device")
+  report("Phonebox device: "+str(device.get("brand","?"))+" "+str(device.get("model","?"))+", Android "+str(device.get("android_version",device.get("android","?"))))
+  for label,url in (("Google One","https://one.google.com/"),("Google account sign-in","https://accounts.google.com/signin/v2/identifier")):
+   result=phonebox_api("/actions","POST",{"actions":[{"type":"open_url","url":url,"package":"com.android.chrome"}],"observe":"ui"},timeout=90)
+   actions=result.get("results",[])
+   if not actions or not actions[0].get("ok"):
+    code=actions[0].get("error",{}).get("code","unknown") if actions else "empty_result"
+    report("Test step failed: "+label+"; reason="+str(code));continue
+   observed=result.get("observation") or {}
+   app=(observed.get("app") or {}).get("package","unknown")
+   print("[ANDROID-TEST] Opened "+label+" in phone; foreground app="+str(app)+"; UI elements="+str(len(observed.get("elements",[]))),flush=True)
+   succeeded.append(label)
+  if len(succeeded)==2:
+   report("Phonebox smoke test SUCCESS: Google One and Google sign-in pages opened in Chrome")
+  elif succeeded:
+   report("Phonebox smoke test PARTIAL: "+", ".join(succeeded))
+  else:report("Phonebox smoke test FAILED: neither page opened")
+ except urllib.error.HTTPError as e:
+  report("Phonebox smoke test HTTP "+str(e.code))
+ except Exception as e:
+  report("Phonebox smoke test error: "+repr(e))
+ finally:
+  try:
+   phonebox_api("/park","POST",{"wait":False},timeout=35)
+   print("[ANDROID-TEST] Phonebox park requested; session charges stopped",flush=True)
+   STATE["status"] += "; park requested"
+  except Exception as e:
+   print("[ANDROID-TEST] ERROR: Phonebox park failed: "+repr(e),flush=True)
+   STATE["status"] += "; PARK FAILED - check Phonebox"
+
 def adb_args(*args):
  return ["adb"]+(["-s",REMOTE_ADB] if REMOTE_ADB else [])+list(args)
 STATE={"status":"starting"}
@@ -25,6 +87,9 @@ def boot():
  try:
   if PHONEBOX_KEY:
    if not PHONEBOX_ID:report("PHONEBOX_PHONE_ID is missing");return
+   if os.environ.get("PHONEBOX_SMOKE_TEST","0")=="1":
+    phonebox_smoke_test()
+    return
    try:
     data,_=phonebox_request("")
     obj=json.loads(data)
