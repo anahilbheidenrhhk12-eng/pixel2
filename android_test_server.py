@@ -42,21 +42,32 @@ def native_google_one_test():
   present=google_one_is_installed()
   report("Google One Android package installed="+str(present))
   if not present:
-   try:
-    resp=phonebox_api("/apps","POST",{"package":GOOGLE_ONE_APP},timeout=40)
-    report("Google One installation requested, state="+str(resp.get("status","unknown")))
-   except urllib.error.HTTPError as e:
-    reason=e.read(1500).decode("utf-8","replace")
-    report("Google One app install unavailable HTTP "+str(e.code)+"; "+reason[:250])
-   for i in range(8):
+   report("Google One not installed. Opening Google Play native app listing")
+   page=phonebox_api("/actions","POST",{"actions":[{"type":"open_url","url":"market://details?id="+GOOGLE_ONE_APP,"package":"com.android.vending"},{"type":"wait","ms":1200}],"observe":"ui"},timeout=100)
+   results=page.get("results") or []
+   success=bool(results and results[0].get("ok"))
+   elements=(page.get("observation") or {}).get("elements") or []
+   labels=[str(e.get("text","")) for e in elements if isinstance(e,dict) and e.get("text")]
+   app=(page.get("observation") or {}).get("app") or {}
+   report("Play Store app listing success="+str(success)+"; app="+str(app.get("package","unknown"))+"; controls="+str([x for x in labels if any(k in x.lower() for k in ("install","sign in","google one","try again","تثبيت","تسجيل"))][:8]))
+   if not success:
+    report("Google One native test blocked: Play Store app listing failed")
+    return
+   install_label=next((x for x in labels if x.lower().strip()=="install" or x.strip()=="تثبيت"),None)
+   if not install_label:
+    report("Google One native test blocked: Google Play requires user action or sign-in (no install button detected)")
+    return
+   install=phonebox_api("/actions","POST",{"actions":[{"type":"tap","target":{"text":install_label}}],"observe":"ui"},timeout=95)
+   if not (install.get("results") or [{}])[0].get("ok"):
+    report("Google One Play Store Install button tap failed")
+    return
+   report("Google One Play Store Install tapped; checking package")
+   for i in range(9):
+    time.sleep(4)
     if google_one_is_installed():present=True;break
-    time.sleep(5)
-  if not present:
-   report("Google One native app NOT installed. Opening its Google Play listing instead.")
-   page=phonebox_api("/actions","POST",{"actions":[{"type":"open_url","url":"market://details?id="+GOOGLE_ONE_APP,"package":"com.android.vending"}],"observe":"ui"},timeout=95)
-   result=(page.get("results") or [{}])[0]
-   report("Play Store listing opened="+str(result.get("ok",False))+"; foreground="+str((page.get("observation",{}).get("app") or {}).get("package","unknown")))
-   return
+   if not present:
+    report("Google One app not installed after Play Store Install")
+    return
   action=phonebox_api("/actions","POST",{"actions":[{"type":"open_app","package":GOOGLE_ONE_APP},{"type":"wait","ms":2500}],"observe":"ui"},timeout=95)
   results=action.get("results") or []
   failed=[x.get("error",{}).get("code") for x in results if not x.get("ok")]
