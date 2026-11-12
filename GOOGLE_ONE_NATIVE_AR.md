@@ -2,6 +2,18 @@
 
 هذا التحديث موجود على فرع `android-test` فقط. لا يغيّر تشغيل بوت `PIXEL` الأصلي.
 
+## تجربة بنقرة واحدة على Windows (الأفضل)
+
+1. نزّل [Android Studio](https://developer.android.com/studio) و[Python 3](https://www.python.org/downloads/windows/).
+2. في Android Studio افتح **More Actions → Virtual Device Manager → Create Device**.
+3. اختر هاتف Pixel أو أي ملف عتاد يحمل شعار **Play Store**، ثم صورة نظام **Google Play** (يفضّل Android 17 إذا كانت متاحة) واضغط Finish.
+4. شغّل `START_GOOGLE_ONE_WINDOWS.bat` بنقرتين من نفس مجلد ملفات المشروع، أو شغّل المحاكي أولًا ثم الملف.
+5. السكريبت يبحث عن Android SDK وADB تلقائيًا، ويفتح المحاكي إن لم يكن مفتوحًا.
+6. سجّل حساب Google من **شاشة المحاكي فقط**. بعد ذلك ثبّت Google One من Play Store عندما يفتح، وستُستكمل محاولة فتح التطبيق.
+7. شوف التقرير في `native_test_results/report.json` والصور في نفس المجلد.
+
+**تنبيه:** ليس مطلوبًا إدخال كلمة السر أو رمز 2FA في Terminal أو Telegram. لا ترسل ملفات screenshots لحساباتك إلى مستودع GitHub عام. المحاكي يختبر التطبيق الأصلي، لكنه ليس جهاز Pixel 11 Pro XL حقيقيًا وقد لا يكون مؤهلًا لعرض الستة أشهر.
+
 ## التسلسل المنفذ
 
 1. تشغيل جهاز Android المتصل بواسطة ADB (هاتف حقيقي أو Android Studio Emulator مع Google Play).
