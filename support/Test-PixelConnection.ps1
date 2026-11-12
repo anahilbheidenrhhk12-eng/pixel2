@@ -68,7 +68,7 @@ function Case([string]$Name, [string]$Status, [bool]$Ready, [int]$Seconds = 3) {
         Assert-True ($result.android_ready -eq $Ready) ($Name + ': wrong readiness')
         $saved = Get-Content -LiteralPath (Join-Path $out 'pixel-connection-result.json') -Raw | ConvertFrom-Json
         Assert-True ($saved.status -eq $Status) ($Name + ': report missing or wrong')
-        Assert-True (($script:calls | Where-Object { $_ -match '\b(kill-server|reboot|tcpip|install|uninstall|wipe-data)\b' }).Count -eq 0) 'Unexpected destructive/global command'
+        Assert-True (@($script:calls | Where-Object { $_ -match '\b(kill-server|reboot|tcpip|install|uninstall|wipe-data)\b' }).Count -eq 0) 'Unexpected destructive/global command'
         return $result
     } finally {
         Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue
@@ -78,10 +78,10 @@ $r = Case 'healthy' 'already_ready' $true
 Assert-True (-not $r.reconnect_attempted -and $r.google_one_installed) 'Healthy device should not be reset'
 $passed.Add('Already-ready target left intact')
 $r = Case 'offline' 'reconnected_ready' $true
-Assert-True ($r.reconnect_attempted -and ($script:calls | Where-Object { $_ -eq '-s emulator-5554 reconnect' }).Count -eq 1) 'Reconnect must be targeted and single'
+Assert-True ($r.reconnect_attempted -and @($script:calls | Where-Object { $_ -eq '-s emulator-5554 reconnect' }).Count -eq 1) 'Reconnect must be targeted and single'
 $passed.Add('Offline target reconnect')
 $r = Case 'always_offline' 'still_offline' $false 0
-Assert-True (($script:calls | Where-Object { $_ -match ' shell ' }).Count -eq 0) 'Offline device must not receive shell commands'
+Assert-True (@($script:calls | Where-Object { $_ -match ' shell ' }).Count -eq 0) 'Offline device must not receive shell commands'
 $passed.Add('Persistent offline is not reported as ready')
 $r = Case 'unauthorized' 'authorization_required' $false 0
 Assert-True (-not $r.reconnect_attempted) 'Unauthorized target should be left to the user'
