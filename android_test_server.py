@@ -1,7 +1,13 @@
-import os,subprocess,threading,time,base64,html
+import os,subprocess,threading,time,base64,html,json,urllib.request,urllib.error
 from http.server import HTTPServer,BaseHTTPRequestHandler
 TOKEN=os.environ.get("VIEWER_TOKEN","")
 REMOTE_ADB=os.environ.get("ANDROID_ADB_ENDPOINT","").strip()
+PHONEBOX_KEY=os.environ.get("PHONEBOX_API_KEY","").strip()
+PHONEBOX_ID=os.environ.get("PHONEBOX_PHONE_ID","").strip()
+def phonebox_request(path):
+ req=urllib.request.Request("https://phonebox.dev/v1/phones/"+PHONEBOX_ID+path,headers={"Authorization":"Bearer "+PHONEBOX_KEY})
+ with urllib.request.urlopen(req,timeout=25) as response:
+  return response.read(),response.headers.get("Content-Type","application/octet-stream")
 def adb_args(*args):
  return ["adb"]+(["-s",REMOTE_ADB] if REMOTE_ADB else [])+list(args)
 STATE={"status":"starting"}
@@ -17,6 +23,14 @@ def emulator_diagnostics():
  except Exception as e:print("[ANDROID-TEST] diagnostics error: "+repr(e),flush=True)
 def boot():
  try:
+  if PHONEBOX_KEY:
+   if not PHONEBOX_ID:report("PHONEBOX_PHONE_ID is missing");return
+   try:
+    data,_=phonebox_request("")
+    obj=json.loads(data)
+    report("Phonebox connected; phone status="+str(obj.get("status","unknown"))+"; phone="+PHONEBOX_ID)
+   except Exception as e:report("Phonebox connection failed: "+str(e));return
+   return
   if REMOTE_ADB:
    report("Connecting to remote Android via ADB")
    for i in range(180):
@@ -55,7 +69,13 @@ class H(BaseHTTPRequestHandler):
   if self.path.split("?",1)[0]=="/health":
    self.send_response(200);self.end_headers();self.wfile.write(STATE["status"].encode());return
   if not self.auth():return
-  if self.path=="/screen":
+  if self.path.split("?",1)[0]=="/screen":
+   if PHONEBOX_KEY and PHONEBOX_ID:
+    try:
+     data,mime=phonebox_request("/screenshot?format=png&max_width=720")
+     self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.end_headers();self.wfile.write(data)
+    except Exception as e:self.send_error(503,str(e))
+    return
    try:
     p=subprocess.run(adb_args("exec-out","screencap","-p"),capture_output=True,timeout=30)
     self.send_response(200 if p.returncode==0 else 503);self.send_header("Content-Type","image/png");self.end_headers();self.wfile.write(p.stdout)
