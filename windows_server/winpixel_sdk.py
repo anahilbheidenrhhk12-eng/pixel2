@@ -158,6 +158,15 @@ def ensure_avd(progress):
         raise RuntimeError("This package requires Windows 10 or Windows 11")
     sdk = find_sdk()
     env = sdk_env(sdk)
+    # A previously installed emulator should start without network or Java.
+    existing_avd = Path.home() / ".android" / "avd" / (AVD_NAME + ".ini")
+    if ((sdk / "platform-tools" / "adb.exe").is_file()
+            and (sdk / "emulator" / "emulator.exe").is_file()
+            and existing_avd.is_file()):
+        os.environ["ANDROID_HOME"] = str(sdk)
+        os.environ["ANDROID_SDK_ROOT"] = str(sdk)
+        os.environ["PATH"] = env["PATH"]
+        return sdk, env
     env = ensure_java(env, progress)
     manager = ensure_cmdline(sdk, progress)
     avdmanager = sdk / "cmdline-tools" / "latest" / "bin" / "avdmanager.bat"
@@ -208,7 +217,18 @@ def adb_command(sdk, *args, serial=None, binary=False, timeout=45):
 
 def ready_emulator(sdk):
     devices = adb_command(sdk, "devices")
-    return [row.split()[0] for row in devices.splitlines() if re.fullmatch(r"emulator-\d+\s+device", row.strip())]
+    matches = []
+    for row in devices.splitlines():
+        if not re.fullmatch(r"emulator-\d+\s+device", row.strip()):
+            continue
+        serial = row.split()[0]
+        try:
+            avd = adb_command(sdk, "emu", "avd", "name", serial=serial, timeout=8)
+            if AVD_NAME in avd:
+                matches.append(serial)
+        except Exception:
+            continue
+    return matches
 
 
 def start_emulator(progress):
